@@ -1,0 +1,8 @@
+# Custom private terms: things that are not PII but must never reach a provider. Made-up examples.
+terms:                          # -> «PRIVATE_TERM_n»; case-insensitive, whole words, any spacing
+  - Project Bluebird
+  - Acme Cloud Ledger
+  - {regex: "11[\\s-]*FTEs?"}      # a regex entry
+figures:                        # -> «PRIVATE_FIGURE_n»; every written format of the amount
+  - 2470000000                  # $2.47B, 2.47 billion, $2,470M, USD 2,470,000,000 ...
+  - {amount: 377000000, need_currency: true}   # only when written with $ / USD

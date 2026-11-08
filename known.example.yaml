@@ -1,0 +1,11 @@
+# Known values: the exact names, emails, phones and other strings to swap. Made-up examples; put your real file
+# outside the repo or keep it as known.yaml (git-ignored). Types: PERSON EMAIL PHONE ADDRESS ORG ID FAMILY ...
+PERSON:
+  - Jane Q Doe
+  - Ozzie Pellam
+EMAIL:
+  - jdoe@corp.example
+PHONE:
+  - "425-555-0182"              # expanded to (425) 555-0182, 425.555.0182, +14255550182, ...
+ADDRESS:
+  - 1234 Elm Street, Springfield

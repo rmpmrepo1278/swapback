@@ -1,0 +1,261 @@
+{
+ "source": "presidio-analyzer",
+ "version": "2.2.366",
+ "license": "MIT",
+ "wheel_sha256": "ae5f29b92d3751521ecc6e5d59b93167381488692c371f9816af72681d3592a9",
+ "recognizers": [
+  {
+   "type": "EMAIL",
+   "class": "EmailRecognizer",
+   "file": "generic/email_recognizer.py",
+   "flags": "DOTALL|MULTILINE|IGNORECASE",
+   "patterns": [
+    [
+     "Email (Medium)",
+     "\\b((([!#$%&'*+\\-/=?^_`{|}~\\w])|([!#$%&'*+\\-/=?^_`{|}~\\w][!#$%&'*+\\-/=?^_`{|}~\\.\\w]{0,}[!#$%&'*+\\-/=?^_`{|}~\\w]))[@]\\w+(?:-+\\w+)*(?:\\.\\w+(?:-+\\w+)*)+)\\b",
+     0.5
+    ]
+   ],
+   "context": [
+    "email"
+   ]
+  },
+  {
+   "type": "CARD",
+   "class": "CreditCardRecognizer",
+   "file": "generic/credit_card_recognizer.py",
+   "flags": "DOTALL|MULTILINE|IGNORECASE",
+   "patterns": [
+    [
+     "All Credit Cards (weak)",
+     "\\b(?!1\\d{12}(?!\\d))((4\\d{3})|(5[0-5]\\d{2})|(6\\d{3})|(1\\d{3})|(3\\d{3}))[- ]?(\\d{3,4})[- ]?(\\d{3,4})[- ]?(\\d{3,5})\\b",
+     0.3
+    ]
+   ],
+   "context": [
+    "credit",
+    "card",
+    "visa",
+    "mastercard",
+    "cc ",
+    "amex",
+    "discover",
+    "jcb",
+    "diners",
+    "maestro",
+    "instapayment"
+   ]
+  },
+  {
+   "type": "IBAN",
+   "class": "IbanRecognizer",
+   "file": "generic/iban_recognizer.py",
+   "flags": "DOTALL|MULTILINE",
+   "patterns": [
+    [
+     "IBAN Generic",
+     "(?<![A-Z0-9])([A-Z]{2}[0-9]{2}(?:[ -]?[A-Z0-9]{4}){2,6})((?:[ -]?[A-Z0-9]{4})?)((?:[ -]?[A-Z0-9]{1,3})?)(?![A-Z0-9])",
+     0.5
+    ]
+   ],
+   "context": [
+    "iban",
+    "bank",
+    "transaction"
+   ]
+  },
+  {
+   "type": "SSN",
+   "class": "UsSsnRecognizer",
+   "file": "country_specific/us/us_ssn_recognizer.py",
+   "flags": "DOTALL|MULTILINE|IGNORECASE",
+   "patterns": [
+    [
+     "SSN1 (very weak)",
+     "\\b([0-9]{5})-([0-9]{4})\\b",
+     0.05
+    ],
+    [
+     "SSN2 (very weak)",
+     "\\b([0-9]{3})-([0-9]{6})\\b",
+     0.05
+    ],
+    [
+     "SSN3 (very weak)",
+     "\\b(([0-9]{3})-([0-9]{2})-([0-9]{4}))\\b",
+     0.05
+    ],
+    [
+     "SSN4 (very weak)",
+     "\\b[0-9]{9}\\b",
+     0.05
+    ],
+    [
+     "SSN5 (medium)",
+     "\\b([0-9]{3})[- .]([0-9]{2})[- .]([0-9]{4})\\b",
+     0.5
+    ]
+   ],
+   "context": [
+    "social",
+    "security",
+    "ssn",
+    "ssns",
+    "ssid"
+   ]
+  },
+  {
+   "type": "IP",
+   "class": "IpRecognizer",
+   "file": "generic/ip_recognizer.py",
+   "flags": "DOTALL|MULTILINE|IGNORECASE",
+   "patterns": [
+    [
+     "IPv4_mapped",
+     "(?<![\\w:])::(?:ffff(?::0{1,4})?:)?(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:/(?:12[0-8]|1[01]\\d|[1-9]?\\d))?\\b",
+     0.6
+    ],
+    [
+     "IPv4_embedded",
+     "(?<![\\w:])(?:(?:[0-9A-Fa-f]{1,4}:){1,5}:(?:[0-9A-Fa-f]{1,4}:){0,4}|(?:[0-9A-Fa-f]{1,4}:){6})(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:/(?:12[0-8]|1[01]\\d|[1-9]?\\d))?\\b",
+     0.6
+    ],
+    [
+     "IPv4",
+     "\\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:/(?:[0-2]?\\d|3[0-2]))?\\b",
+     0.6
+    ],
+    [
+     "IPv6",
+     "(?<![\\w:])(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:|:(?::[0-9A-Fa-f]{1,4}){1,7}|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}|:(?::[0-9A-Fa-f]{1,4}){1,6})(?:%[0-9a-zA-Z]+)?(?:/(?:12[0-8]|1[01]\\d|[1-9]?\\d))?(?![\\w:]|\\.\\d)",
+     0.6
+    ],
+    [
+     "IPv6_unspecified",
+     "(?<![\\w:])::(?:/(?:12[0-8]|1[01]\\d|[1-9]?\\d))?(?![\\w:])",
+     0.1
+    ]
+   ],
+   "context": [
+    "ip",
+    "ipv4",
+    "ipv6"
+   ]
+  },
+  {
+   "type": "URL",
+   "class": "UrlRecognizer",
+   "file": "generic/url_recognizer.py",
+   "flags": "DOTALL|MULTILINE|IGNORECASE",
+   "patterns": [
+    [
+     "Standard Url",
+     "(?i)(?:https?://)((www\\d{0,3}[.])?[a-z0-9.\\-]{1,253}[.](?:(?:com)|(?:edu)|(?:gov)|(?:int)|(?:mil)|(?:net)|(?:onl)|(?:org)|(?:pro)|(?:red)|(?:tel)|(?:uno)|(?:xxx)|(?:academy)|(?:accountant)|(?:accountants)|(?:actor)|(?:adult)|(?:africa)|(?:agency)|(?:airforce)|(?:apartments)|(?:app)|(?:archi)|(?:army)|(?:art)|(?:asia)|(?:associates)|(?:attorney)|(?:auction)|(?:audio)|(?:auto)|(?:autos)|(?:baby)|(?:band)|(?:bar)|(?:bargains)|(?:beer)|(?:berlin)|(?:best)|(?:bet)|(?:bid)|(?:bike)|(?:bio)|(?:black)|(?:blackfriday)|(?:blog)|(?:blue)|(?:boats)|(?:bond)|(?:boo)|(?:boston)|(?:bot)|(?:boutique)|(?:build)|(?:builders)|(?:business)|(?:buzz)|(?:cab)|(?:cafe)|(?:cam)|(?:camera)|(?:camp)|(?:capital)|(?:car)|(?:cards)|(?:care)|(?:careers)|(?:cars)|(?:casa)|(?:cash)|(?:casino)|(?:catering)|(?:center)|(?:ceo)|(?:cfd)|(?:charity)|(?:chat)|(?:cheap)|(?:christmas)|(?:church)|(?:city)|(?:claims)|(?:cleaning)|(?:click)|(?:clinic)|(?:clothing)|(?:cloud)|(?:club)|(?:codes)|(?:coffee)|(?:college)|(?:com)|(?:community)|(?:company)|(?:computer)|(?:condos)|(?:construction)|(?:consulting)|(?:contact)|(?:contractors)|(?:cooking)|(?:cool)|(?:coupons)|(?:courses)|(?:credit)|(?:creditcard)|(?:cricket)|(?:cruises)|(?:cyou)|(?:dad)|(?:dance)|(?:date)|(?:dating)|(?:day)|(?:degree)|(?:delivery)|(?:democrat)|(?:dental)|(?:dentist)|(?:desi)|(?:design)|(?:dev)|(?:diamonds)|(?:diet)|(?:digital)|(?:direct)|(?:directory)|(?:discount)|(?:doctor)|(?:dog)|(?:domains)|(?:download)|(?:earth)|(?:eco)|(?:education)|(?:email)|(?:energy)|(?:engineer)|(?:engineering)|(?:enterprises)|(?:equipment)|(?:esq)|(?:estate)|(?:events)|(?:exchange)|(?:expert)|(?:exposed)|(?:express)|(?:fail)|(?:faith)|(?:family)|(?:fans)|(?:farm)|(?:fashion)|(?:feedback)|(?:film)|(?:finance)|(?:financial)|(?:fish)|(?:fishing)|(?:fit)|(?:fitness)|(?:flights)|(?:florist)|(?:flowers)|(?:football)|(?:forsale)|(?:foundation)|(?:fun)|(?:fund)|(?:furniture)|(?:futbol)|(?:fyi)|(?:gallery)|(?:game)|(?:games)|(?:garden)|(?:gay)|(?:gdn)|(?:gifts)|(?:gives)|(?:giving)|(?:glass)|(?:global)|(?:gmbh)|(?:gold)|(?:golf)|(?:graphics)|(?:gratis)|(?:green)|(?:gripe)|(?:group)|(?:guide)|(?:guitars)|(?:guru)|(?:hair)|(?:hamburg)|(?:haus)|(?:health)|(?:healthcare)|(?:help)|(?:hiphop)|(?:hockey)|(?:holdings)|(?:holiday)|(?:homes)|(?:horse)|(?:hospital)|(?:host)|(?:hosting)|(?:house)|(?:how)|(?:icu)|(?:info)|(?:ink)|(?:institute)|(?:insure)|(?:international)|(?:investments)|(?:irish)|(?:jewelry)|(?:jetzt)|(?:juegos)|(?:kaufen)|(?:kids)|(?:kitchen)|(?:kiwi)|(?:krd)|(?:kyoto)|(?:land)|(?:lat)|(?:law)|(?:lawyer)|(?:lease)|(?:legal)|(?:lgbt)|(?:life)|(?:lighting)|(?:limited)|(?:limo)|(?:link)|(?:live)|(?:loan)|(?:loans)|(?:lol)|(?:london)|(?:love)|(?:ltd)|(?:ltda)|(?:luxury)|(?:maison)|(?:management)|(?:market)|(?:marketing)|(?:markets)|(?:mba)|(?:media)|(?:melbourne)|(?:meme)|(?:memorial)|(?:men)|(?:miami)|(?:mobi)|(?:moda)|(?:moe)|(?:mom)|(?:money)|(?:monster)|(?:mortgage)|(?:motorcycles)|(?:mov)|(?:movie)|(?:nagoya)|(?:name)|(?:navy)|(?:network)|(?:new)|(?:news)|(?:ngo)|(?:ninja)|(?:now)|(?:nyc)|(?:observer)|(?:okinawa)|(?:one)|(?:ong)|(?:onl)|(?:online)|(?:organic)|(?:osaka)|(?:page)|(?:paris)|(?:partners)|(?:parts)|(?:party)|(?:pet)|(?:phd)|(?:photo)|(?:photography)|(?:photos)|(?:pics)|(?:pictures)|(?:pink)|(?:pizza)|(?:place)|(?:plumbing)|(?:plus)|(?:poker)|(?:porn)|(?:press)|(?:pro)|(?:productions)|(?:prof)|(?:promo)|(?:properties)|(?:property)|(?:protection)|(?:pub)|(?:quest)|(?:racing)|(?:recipes)|(?:red)|(?:rehab)|(?:reise)|(?:reisen)|(?:rent)|(?:rentals)|(?:repair)|(?:report)|(?:republican)|(?:rest)|(?:restaurant)|(?:review)|(?:reviews)|(?:rip)|(?:rocks)|(?:rodeo)|(?:rsvp)|(?:run)|(?:saarland)|(?:sale)|(?:salon)|(?:sarl)|(?:sbs)|(?:school)|(?:schule)|(?:science)|(?:services)|(?:sex)|(?:sexy)|(?:sh)|(?:shoes)|(?:shop)|(?:shopping)|(?:show)|(?:singles)|(?:site)|(?:skin)|(?:soccer)|(?:social)|(?:software)|(?:solar)|(?:solutions)|(?:soy)|(?:space)|(?:spiegel)|(?:study)|(?:style)|(?:sucks)|(?:supply)|(?:support)|(?:surf)|(?:surgery)|(?:systems)|(?:tax)|(?:taxi)|(?:team)|(?:tech)|(?:technology)|(?:tel)|(?:theater)|(?:tips)|(?:tires)|(?:today)|(?:tools)|(?:top)|(?:tours)|(?:town)|(?:toys)|(?:trade)|(?:training)|(?:tube)|(?:uk)|(?:university)|(?:uno)|(?:vacations)|(?:ventures)|(?:vet)|(?:video)|(?:villas)|(?:vin)|(?:vip)|(?:vision)|(?:vlaanderen)|(?:vodka)|(?:vote)|(?:voting)|(?:voyage)|(?:wales)|(?:wang)|(?:watch)|(?:webcam)|(?:website)|(?:wedding)|(?:wiki)|(?:wine)|(?:work)|(?:works)|(?:world)|(?:wtf)|(?:xyz)|(?:yoga)|(?:yokohama)|(?:you)|(?:zone)|(?:ac)|(?:ad)|(?:ae)|(?:af)|(?:ag)|(?:ai)|(?:al)|(?:am)|(?:an)|(?:ao)|(?:aq)|(?:ar)|(?:as)|(?:at)|(?:au)|(?:aw)|(?:ax)|(?:az)|(?:ba)|(?:bb)|(?:bd)|(?:be)|(?:bf)|(?:bg)|(?:bh)|(?:bi)|(?:bj)|(?:bm)|(?:bn)|(?:bo)|(?:br)|(?:bs)|(?:bt)|(?:bv)|(?:bw)|(?:by)|(?:bz)|(?:ca)|(?:cc)|(?:cd)|(?:cf)|(?:cg)|(?:ch)|(?:ci)|(?:ck)|(?:cl)|(?:cm)|(?:cn)|(?:co)|(?:cr)|(?:cu)|(?:cv)|(?:cw)|(?:cx)|(?:cy)|(?:cz)|(?:de)|(?:dj)|(?:dk)|(?:dm)|(?:do)|(?:dz)|(?:ec)|(?:ee)|(?:eg)|(?:er)|(?:es)|(?:et)|(?:eu)|(?:fi)|(?:fj)|(?:fk)|(?:fm)|(?:fo)|(?:fr)|(?:ga)|(?:gb)|(?:gd)|(?:ge)|(?:gf)|(?:gg)|(?:gh)|(?:gi)|(?:gl)|(?:gm)|(?:gn)|(?:gp)|(?:gq)|(?:gr)|(?:gs)|(?:gt)|(?:gu)|(?:gw)|(?:gy)|(?:hk)|(?:hm)|(?:hn)|(?:hr)|(?:ht)|(?:hu)|(?:id)|(?:ie)|(?:il)|(?:im)|(?:in)|(?:io)|(?:iq)|(?:ir)|(?:is)|(?:it)|(?:je)|(?:jm)|(?:jo)|(?:jp)|(?:ke)|(?:kg)|(?:kh)|(?:ki)|(?:km)|(?:kn)|(?:kp)|(?:kr)|(?:kw)|(?:ky)|(?:kz)|(?:la)|(?:lb)|(?:lc)|(?:li)|(?:lk)|(?:lr)|(?:ls)|(?:lt)|(?:lu)|(?:lv)|(?:ly)|(?:ma)|(?:mc)|(?:md)|(?:me)|(?:mg)|(?:mh)|(?:mk)|(?:ml)|(?:mm)|(?:mn)|(?:mo)|(?:mp)|(?:mq)|(?:mr)|(?:ms)|(?:mt)|(?:mu)|(?:mv)|(?:mw)|(?:mx)|(?:my)|(?:mz)|(?:na)|(?:nc)|(?:ne)|(?:nf)|(?:ng)|(?:ni)|(?:nl)|(?:no)|(?:np)|(?:nr)|(?:nu)|(?:nz)|(?:om)|(?:pa)|(?:pe)|(?:pf)|(?:pg)|(?:ph)|(?:pk)|(?:pl)|(?:pm)|(?:pn)|(?:pr)|(?:ps)|(?:pt)|(?:pw)|(?:py)|(?:qa)|(?:re)|(?:ro)|(?:rs)|(?:ru)|(?:rw)|(?:sa)|(?:sb)|(?:sc)|(?:sd)|(?:se)|(?:sg)|(?:sh)|(?:si)|(?:sj)|(?:sk)|(?:sl)|(?:sm)|(?:sn)|(?:so)|(?:sr)|(?:st)|(?:su)|(?:sv)|(?:sx)|(?:sy)|(?:sz)|(?:tc)|(?:td)|(?:tf)|(?:tg)|(?:th)|(?:tj)|(?:tk)|(?:tl)|(?:tm)|(?:tn)|(?:to)|(?:tp)|(?:tr)|(?:tt)|(?:tv)|(?:tw)|(?:tz)|(?:ua)|(?:ug)|(?:uk)|(?:us)|(?:uy)|(?:uz)|(?:va)|(?:vc)|(?:ve)|(?:vg)|(?:vi)|(?:vn)|(?:vu)|(?:wf)|(?:ws)|(?:ye)|(?:yt)|(?:za)|(?:zm)|(?:zw))(?:/[^\\s()<>\\\"']*)?)",
+     0.6
+    ],
+    [
+     "Non schema URL",
+     "(?i)((www\\d{0,3}[.])?[a-z0-9.\\-]{1,253}[.](?:(?:com)|(?:edu)|(?:gov)|(?:int)|(?:mil)|(?:net)|(?:onl)|(?:org)|(?:pro)|(?:red)|(?:tel)|(?:uno)|(?:xxx)|(?:academy)|(?:accountant)|(?:accountants)|(?:actor)|(?:adult)|(?:africa)|(?:agency)|(?:airforce)|(?:apartments)|(?:app)|(?:archi)|(?:army)|(?:art)|(?:asia)|(?:associates)|(?:attorney)|(?:auction)|(?:audio)|(?:auto)|(?:autos)|(?:baby)|(?:band)|(?:bar)|(?:bargains)|(?:beer)|(?:berlin)|(?:best)|(?:bet)|(?:bid)|(?:bike)|(?:bio)|(?:black)|(?:blackfriday)|(?:blog)|(?:blue)|(?:boats)|(?:bond)|(?:boo)|(?:boston)|(?:bot)|(?:boutique)|(?:build)|(?:builders)|(?:business)|(?:buzz)|(?:cab)|(?:cafe)|(?:cam)|(?:camera)|(?:camp)|(?:capital)|(?:car)|(?:cards)|(?:care)|(?:careers)|(?:cars)|(?:casa)|(?:cash)|(?:casino)|(?:catering)|(?:center)|(?:ceo)|(?:cfd)|(?:charity)|(?:chat)|(?:cheap)|(?:christmas)|(?:church)|(?:city)|(?:claims)|(?:cleaning)|(?:click)|(?:clinic)|(?:clothing)|(?:cloud)|(?:club)|(?:codes)|(?:coffee)|(?:college)|(?:com)|(?:community)|(?:company)|(?:computer)|(?:condos)|(?:construction)|(?:consulting)|(?:contact)|(?:contractors)|(?:cooking)|(?:cool)|(?:coupons)|(?:courses)|(?:credit)|(?:creditcard)|(?:cricket)|(?:cruises)|(?:cyou)|(?:dad)|(?:dance)|(?:date)|(?:dating)|(?:day)|(?:degree)|(?:delivery)|(?:democrat)|(?:dental)|(?:dentist)|(?:desi)|(?:design)|(?:dev)|(?:diamonds)|(?:diet)|(?:digital)|(?:direct)|(?:directory)|(?:discount)|(?:doctor)|(?:dog)|(?:domains)|(?:download)|(?:earth)|(?:eco)|(?:education)|(?:email)|(?:energy)|(?:engineer)|(?:engineering)|(?:enterprises)|(?:equipment)|(?:esq)|(?:estate)|(?:events)|(?:exchange)|(?:expert)|(?:exposed)|(?:express)|(?:fail)|(?:faith)|(?:family)|(?:fans)|(?:farm)|(?:fashion)|(?:feedback)|(?:film)|(?:finance)|(?:financial)|(?:fish)|(?:fishing)|(?:fit)|(?:fitness)|(?:flights)|(?:florist)|(?:flowers)|(?:football)|(?:forsale)|(?:foundation)|(?:fun)|(?:fund)|(?:furniture)|(?:futbol)|(?:fyi)|(?:gallery)|(?:game)|(?:games)|(?:garden)|(?:gay)|(?:gdn)|(?:gifts)|(?:gives)|(?:giving)|(?:glass)|(?:global)|(?:gmbh)|(?:gold)|(?:golf)|(?:graphics)|(?:gratis)|(?:green)|(?:gripe)|(?:group)|(?:guide)|(?:guitars)|(?:guru)|(?:hair)|(?:hamburg)|(?:haus)|(?:health)|(?:healthcare)|(?:help)|(?:hiphop)|(?:hockey)|(?:holdings)|(?:holiday)|(?:homes)|(?:horse)|(?:hospital)|(?:host)|(?:hosting)|(?:house)|(?:how)|(?:icu)|(?:info)|(?:ink)|(?:institute)|(?:insure)|(?:international)|(?:investments)|(?:irish)|(?:jewelry)|(?:jetzt)|(?:juegos)|(?:kaufen)|(?:kids)|(?:kitchen)|(?:kiwi)|(?:krd)|(?:kyoto)|(?:land)|(?:lat)|(?:law)|(?:lawyer)|(?:lease)|(?:legal)|(?:lgbt)|(?:life)|(?:lighting)|(?:limited)|(?:limo)|(?:link)|(?:live)|(?:loan)|(?:loans)|(?:lol)|(?:london)|(?:love)|(?:ltd)|(?:ltda)|(?:luxury)|(?:maison)|(?:management)|(?:market)|(?:marketing)|(?:markets)|(?:mba)|(?:media)|(?:melbourne)|(?:meme)|(?:memorial)|(?:men)|(?:miami)|(?:mobi)|(?:moda)|(?:moe)|(?:mom)|(?:money)|(?:monster)|(?:mortgage)|(?:motorcycles)|(?:mov)|(?:movie)|(?:nagoya)|(?:name)|(?:navy)|(?:network)|(?:new)|(?:news)|(?:ngo)|(?:ninja)|(?:now)|(?:nyc)|(?:observer)|(?:okinawa)|(?:one)|(?:ong)|(?:onl)|(?:online)|(?:organic)|(?:osaka)|(?:page)|(?:paris)|(?:partners)|(?:parts)|(?:party)|(?:pet)|(?:phd)|(?:photo)|(?:photography)|(?:photos)|(?:pics)|(?:pictures)|(?:pink)|(?:pizza)|(?:place)|(?:plumbing)|(?:plus)|(?:poker)|(?:porn)|(?:press)|(?:pro)|(?:productions)|(?:prof)|(?:promo)|(?:properties)|(?:property)|(?:protection)|(?:pub)|(?:quest)|(?:racing)|(?:recipes)|(?:red)|(?:rehab)|(?:reise)|(?:reisen)|(?:rent)|(?:rentals)|(?:repair)|(?:report)|(?:republican)|(?:rest)|(?:restaurant)|(?:review)|(?:reviews)|(?:rip)|(?:rocks)|(?:rodeo)|(?:rsvp)|(?:run)|(?:saarland)|(?:sale)|(?:salon)|(?:sarl)|(?:sbs)|(?:school)|(?:schule)|(?:science)|(?:services)|(?:sex)|(?:sexy)|(?:sh)|(?:shoes)|(?:shop)|(?:shopping)|(?:show)|(?:singles)|(?:site)|(?:skin)|(?:soccer)|(?:social)|(?:software)|(?:solar)|(?:solutions)|(?:soy)|(?:space)|(?:spiegel)|(?:study)|(?:style)|(?:sucks)|(?:supply)|(?:support)|(?:surf)|(?:surgery)|(?:systems)|(?:tax)|(?:taxi)|(?:team)|(?:tech)|(?:technology)|(?:tel)|(?:theater)|(?:tips)|(?:tires)|(?:today)|(?:tools)|(?:top)|(?:tours)|(?:town)|(?:toys)|(?:trade)|(?:training)|(?:tube)|(?:uk)|(?:university)|(?:uno)|(?:vacations)|(?:ventures)|(?:vet)|(?:video)|(?:villas)|(?:vin)|(?:vip)|(?:vision)|(?:vlaanderen)|(?:vodka)|(?:vote)|(?:voting)|(?:voyage)|(?:wales)|(?:wang)|(?:watch)|(?:webcam)|(?:website)|(?:wedding)|(?:wiki)|(?:wine)|(?:work)|(?:works)|(?:world)|(?:wtf)|(?:xyz)|(?:yoga)|(?:yokohama)|(?:you)|(?:zone)|(?:ac)|(?:ad)|(?:ae)|(?:af)|(?:ag)|(?:ai)|(?:al)|(?:am)|(?:an)|(?:ao)|(?:aq)|(?:ar)|(?:as)|(?:at)|(?:au)|(?:aw)|(?:ax)|(?:az)|(?:ba)|(?:bb)|(?:bd)|(?:be)|(?:bf)|(?:bg)|(?:bh)|(?:bi)|(?:bj)|(?:bm)|(?:bn)|(?:bo)|(?:br)|(?:bs)|(?:bt)|(?:bv)|(?:bw)|(?:by)|(?:bz)|(?:ca)|(?:cc)|(?:cd)|(?:cf)|(?:cg)|(?:ch)|(?:ci)|(?:ck)|(?:cl)|(?:cm)|(?:cn)|(?:co)|(?:cr)|(?:cu)|(?:cv)|(?:cw)|(?:cx)|(?:cy)|(?:cz)|(?:de)|(?:dj)|(?:dk)|(?:dm)|(?:do)|(?:dz)|(?:ec)|(?:ee)|(?:eg)|(?:er)|(?:es)|(?:et)|(?:eu)|(?:fi)|(?:fj)|(?:fk)|(?:fm)|(?:fo)|(?:fr)|(?:ga)|(?:gb)|(?:gd)|(?:ge)|(?:gf)|(?:gg)|(?:gh)|(?:gi)|(?:gl)|(?:gm)|(?:gn)|(?:gp)|(?:gq)|(?:gr)|(?:gs)|(?:gt)|(?:gu)|(?:gw)|(?:gy)|(?:hk)|(?:hm)|(?:hn)|(?:hr)|(?:ht)|(?:hu)|(?:id)|(?:ie)|(?:il)|(?:im)|(?:in)|(?:io)|(?:iq)|(?:ir)|(?:is)|(?:it)|(?:je)|(?:jm)|(?:jo)|(?:jp)|(?:ke)|(?:kg)|(?:kh)|(?:ki)|(?:km)|(?:kn)|(?:kp)|(?:kr)|(?:kw)|(?:ky)|(?:kz)|(?:la)|(?:lb)|(?:lc)|(?:li)|(?:lk)|(?:lr)|(?:ls)|(?:lt)|(?:lu)|(?:lv)|(?:ly)|(?:ma)|(?:mc)|(?:md)|(?:me)|(?:mg)|(?:mh)|(?:mk)|(?:ml)|(?:mm)|(?:mn)|(?:mo)|(?:mp)|(?:mq)|(?:mr)|(?:ms)|(?:mt)|(?:mu)|(?:mv)|(?:mw)|(?:mx)|(?:my)|(?:mz)|(?:na)|(?:nc)|(?:ne)|(?:nf)|(?:ng)|(?:ni)|(?:nl)|(?:no)|(?:np)|(?:nr)|(?:nu)|(?:nz)|(?:om)|(?:pa)|(?:pe)|(?:pf)|(?:pg)|(?:ph)|(?:pk)|(?:pl)|(?:pm)|(?:pn)|(?:pr)|(?:ps)|(?:pt)|(?:pw)|(?:py)|(?:qa)|(?:re)|(?:ro)|(?:rs)|(?:ru)|(?:rw)|(?:sa)|(?:sb)|(?:sc)|(?:sd)|(?:se)|(?:sg)|(?:sh)|(?:si)|(?:sj)|(?:sk)|(?:sl)|(?:sm)|(?:sn)|(?:so)|(?:sr)|(?:st)|(?:su)|(?:sv)|(?:sx)|(?:sy)|(?:sz)|(?:tc)|(?:td)|(?:tf)|(?:tg)|(?:th)|(?:tj)|(?:tk)|(?:tl)|(?:tm)|(?:tn)|(?:to)|(?:tp)|(?:tr)|(?:tt)|(?:tv)|(?:tw)|(?:tz)|(?:ua)|(?:ug)|(?:uk)|(?:us)|(?:uy)|(?:uz)|(?:va)|(?:vc)|(?:ve)|(?:vg)|(?:vi)|(?:vn)|(?:vu)|(?:wf)|(?:ws)|(?:ye)|(?:yt)|(?:za)|(?:zm)|(?:zw))(?:/[^\\s()<>\\\"']*)?)",
+     0.5
+    ],
+    [
+     "Quoted URL",
+     "(?i)[\"\\'](https?://((www\\d{0,3}[.])?[a-z0-9.\\-]{1,253}[.](?:(?:com)|(?:edu)|(?:gov)|(?:int)|(?:mil)|(?:net)|(?:onl)|(?:org)|(?:pro)|(?:red)|(?:tel)|(?:uno)|(?:xxx)|(?:academy)|(?:accountant)|(?:accountants)|(?:actor)|(?:adult)|(?:africa)|(?:agency)|(?:airforce)|(?:apartments)|(?:app)|(?:archi)|(?:army)|(?:art)|(?:asia)|(?:associates)|(?:attorney)|(?:auction)|(?:audio)|(?:auto)|(?:autos)|(?:baby)|(?:band)|(?:bar)|(?:bargains)|(?:beer)|(?:berlin)|(?:best)|(?:bet)|(?:bid)|(?:bike)|(?:bio)|(?:black)|(?:blackfriday)|(?:blog)|(?:blue)|(?:boats)|(?:bond)|(?:boo)|(?:boston)|(?:bot)|(?:boutique)|(?:build)|(?:builders)|(?:business)|(?:buzz)|(?:cab)|(?:cafe)|(?:cam)|(?:camera)|(?:camp)|(?:capital)|(?:car)|(?:cards)|(?:care)|(?:careers)|(?:cars)|(?:casa)|(?:cash)|(?:casino)|(?:catering)|(?:center)|(?:ceo)|(?:cfd)|(?:charity)|(?:chat)|(?:cheap)|(?:christmas)|(?:church)|(?:city)|(?:claims)|(?:cleaning)|(?:click)|(?:clinic)|(?:clothing)|(?:cloud)|(?:club)|(?:codes)|(?:coffee)|(?:college)|(?:com)|(?:community)|(?:company)|(?:computer)|(?:condos)|(?:construction)|(?:consulting)|(?:contact)|(?:contractors)|(?:cooking)|(?:cool)|(?:coupons)|(?:courses)|(?:credit)|(?:creditcard)|(?:cricket)|(?:cruises)|(?:cyou)|(?:dad)|(?:dance)|(?:date)|(?:dating)|(?:day)|(?:degree)|(?:delivery)|(?:democrat)|(?:dental)|(?:dentist)|(?:desi)|(?:design)|(?:dev)|(?:diamonds)|(?:diet)|(?:digital)|(?:direct)|(?:directory)|(?:discount)|(?:doctor)|(?:dog)|(?:domains)|(?:download)|(?:earth)|(?:eco)|(?:education)|(?:email)|(?:energy)|(?:engineer)|(?:engineering)|(?:enterprises)|(?:equipment)|(?:esq)|(?:estate)|(?:events)|(?:exchange)|(?:expert)|(?:exposed)|(?:express)|(?:fail)|(?:faith)|(?:family)|(?:fans)|(?:farm)|(?:fashion)|(?:feedback)|(?:film)|(?:finance)|(?:financial)|(?:fish)|(?:fishing)|(?:fit)|(?:fitness)|(?:flights)|(?:florist)|(?:flowers)|(?:football)|(?:forsale)|(?:foundation)|(?:fun)|(?:fund)|(?:furniture)|(?:futbol)|(?:fyi)|(?:gallery)|(?:game)|(?:games)|(?:garden)|(?:gay)|(?:gdn)|(?:gifts)|(?:gives)|(?:giving)|(?:glass)|(?:global)|(?:gmbh)|(?:gold)|(?:golf)|(?:graphics)|(?:gratis)|(?:green)|(?:gripe)|(?:group)|(?:guide)|(?:guitars)|(?:guru)|(?:hair)|(?:hamburg)|(?:haus)|(?:health)|(?:healthcare)|(?:help)|(?:hiphop)|(?:hockey)|(?:holdings)|(?:holiday)|(?:homes)|(?:horse)|(?:hospital)|(?:host)|(?:hosting)|(?:house)|(?:how)|(?:icu)|(?:info)|(?:ink)|(?:institute)|(?:insure)|(?:international)|(?:investments)|(?:irish)|(?:jewelry)|(?:jetzt)|(?:juegos)|(?:kaufen)|(?:kids)|(?:kitchen)|(?:kiwi)|(?:krd)|(?:kyoto)|(?:land)|(?:lat)|(?:law)|(?:lawyer)|(?:lease)|(?:legal)|(?:lgbt)|(?:life)|(?:lighting)|(?:limited)|(?:limo)|(?:link)|(?:live)|(?:loan)|(?:loans)|(?:lol)|(?:london)|(?:love)|(?:ltd)|(?:ltda)|(?:luxury)|(?:maison)|(?:management)|(?:market)|(?:marketing)|(?:markets)|(?:mba)|(?:media)|(?:melbourne)|(?:meme)|(?:memorial)|(?:men)|(?:miami)|(?:mobi)|(?:moda)|(?:moe)|(?:mom)|(?:money)|(?:monster)|(?:mortgage)|(?:motorcycles)|(?:mov)|(?:movie)|(?:nagoya)|(?:name)|(?:navy)|(?:network)|(?:new)|(?:news)|(?:ngo)|(?:ninja)|(?:now)|(?:nyc)|(?:observer)|(?:okinawa)|(?:one)|(?:ong)|(?:onl)|(?:online)|(?:organic)|(?:osaka)|(?:page)|(?:paris)|(?:partners)|(?:parts)|(?:party)|(?:pet)|(?:phd)|(?:photo)|(?:photography)|(?:photos)|(?:pics)|(?:pictures)|(?:pink)|(?:pizza)|(?:place)|(?:plumbing)|(?:plus)|(?:poker)|(?:porn)|(?:press)|(?:pro)|(?:productions)|(?:prof)|(?:promo)|(?:properties)|(?:property)|(?:protection)|(?:pub)|(?:quest)|(?:racing)|(?:recipes)|(?:red)|(?:rehab)|(?:reise)|(?:reisen)|(?:rent)|(?:rentals)|(?:repair)|(?:report)|(?:republican)|(?:rest)|(?:restaurant)|(?:review)|(?:reviews)|(?:rip)|(?:rocks)|(?:rodeo)|(?:rsvp)|(?:run)|(?:saarland)|(?:sale)|(?:salon)|(?:sarl)|(?:sbs)|(?:school)|(?:schule)|(?:science)|(?:services)|(?:sex)|(?:sexy)|(?:sh)|(?:shoes)|(?:shop)|(?:shopping)|(?:show)|(?:singles)|(?:site)|(?:skin)|(?:soccer)|(?:social)|(?:software)|(?:solar)|(?:solutions)|(?:soy)|(?:space)|(?:spiegel)|(?:study)|(?:style)|(?:sucks)|(?:supply)|(?:support)|(?:surf)|(?:surgery)|(?:systems)|(?:tax)|(?:taxi)|(?:team)|(?:tech)|(?:technology)|(?:tel)|(?:theater)|(?:tips)|(?:tires)|(?:today)|(?:tools)|(?:top)|(?:tours)|(?:town)|(?:toys)|(?:trade)|(?:training)|(?:tube)|(?:uk)|(?:university)|(?:uno)|(?:vacations)|(?:ventures)|(?:vet)|(?:video)|(?:villas)|(?:vin)|(?:vip)|(?:vision)|(?:vlaanderen)|(?:vodka)|(?:vote)|(?:voting)|(?:voyage)|(?:wales)|(?:wang)|(?:watch)|(?:webcam)|(?:website)|(?:wedding)|(?:wiki)|(?:wine)|(?:work)|(?:works)|(?:world)|(?:wtf)|(?:xyz)|(?:yoga)|(?:yokohama)|(?:you)|(?:zone)|(?:ac)|(?:ad)|(?:ae)|(?:af)|(?:ag)|(?:ai)|(?:al)|(?:am)|(?:an)|(?:ao)|(?:aq)|(?:ar)|(?:as)|(?:at)|(?:au)|(?:aw)|(?:ax)|(?:az)|(?:ba)|(?:bb)|(?:bd)|(?:be)|(?:bf)|(?:bg)|(?:bh)|(?:bi)|(?:bj)|(?:bm)|(?:bn)|(?:bo)|(?:br)|(?:bs)|(?:bt)|(?:bv)|(?:bw)|(?:by)|(?:bz)|(?:ca)|(?:cc)|(?:cd)|(?:cf)|(?:cg)|(?:ch)|(?:ci)|(?:ck)|(?:cl)|(?:cm)|(?:cn)|(?:co)|(?:cr)|(?:cu)|(?:cv)|(?:cw)|(?:cx)|(?:cy)|(?:cz)|(?:de)|(?:dj)|(?:dk)|(?:dm)|(?:do)|(?:dz)|(?:ec)|(?:ee)|(?:eg)|(?:er)|(?:es)|(?:et)|(?:eu)|(?:fi)|(?:fj)|(?:fk)|(?:fm)|(?:fo)|(?:fr)|(?:ga)|(?:gb)|(?:gd)|(?:ge)|(?:gf)|(?:gg)|(?:gh)|(?:gi)|(?:gl)|(?:gm)|(?:gn)|(?:gp)|(?:gq)|(?:gr)|(?:gs)|(?:gt)|(?:gu)|(?:gw)|(?:gy)|(?:hk)|(?:hm)|(?:hn)|(?:hr)|(?:ht)|(?:hu)|(?:id)|(?:ie)|(?:il)|(?:im)|(?:in)|(?:io)|(?:iq)|(?:ir)|(?:is)|(?:it)|(?:je)|(?:jm)|(?:jo)|(?:jp)|(?:ke)|(?:kg)|(?:kh)|(?:ki)|(?:km)|(?:kn)|(?:kp)|(?:kr)|(?:kw)|(?:ky)|(?:kz)|(?:la)|(?:lb)|(?:lc)|(?:li)|(?:lk)|(?:lr)|(?:ls)|(?:lt)|(?:lu)|(?:lv)|(?:ly)|(?:ma)|(?:mc)|(?:md)|(?:me)|(?:mg)|(?:mh)|(?:mk)|(?:ml)|(?:mm)|(?:mn)|(?:mo)|(?:mp)|(?:mq)|(?:mr)|(?:ms)|(?:mt)|(?:mu)|(?:mv)|(?:mw)|(?:mx)|(?:my)|(?:mz)|(?:na)|(?:nc)|(?:ne)|(?:nf)|(?:ng)|(?:ni)|(?:nl)|(?:no)|(?:np)|(?:nr)|(?:nu)|(?:nz)|(?:om)|(?:pa)|(?:pe)|(?:pf)|(?:pg)|(?:ph)|(?:pk)|(?:pl)|(?:pm)|(?:pn)|(?:pr)|(?:ps)|(?:pt)|(?:pw)|(?:py)|(?:qa)|(?:re)|(?:ro)|(?:rs)|(?:ru)|(?:rw)|(?:sa)|(?:sb)|(?:sc)|(?:sd)|(?:se)|(?:sg)|(?:sh)|(?:si)|(?:sj)|(?:sk)|(?:sl)|(?:sm)|(?:sn)|(?:so)|(?:sr)|(?:st)|(?:su)|(?:sv)|(?:sx)|(?:sy)|(?:sz)|(?:tc)|(?:td)|(?:tf)|(?:tg)|(?:th)|(?:tj)|(?:tk)|(?:tl)|(?:tm)|(?:tn)|(?:to)|(?:tp)|(?:tr)|(?:tt)|(?:tv)|(?:tw)|(?:tz)|(?:ua)|(?:ug)|(?:uk)|(?:us)|(?:uy)|(?:uz)|(?:va)|(?:vc)|(?:ve)|(?:vg)|(?:vi)|(?:vn)|(?:vu)|(?:wf)|(?:ws)|(?:ye)|(?:yt)|(?:za)|(?:zm)|(?:zw))(?:/[^\\s()<>\\\"']*)?))[\"\\']",
+     0.6
+    ],
+    [
+     "Quoted Non-schema URL",
+     "(?i)[\"\\'](((www\\d{0,3}[.])?[a-z0-9.\\-]{1,253}[.](?:(?:com)|(?:edu)|(?:gov)|(?:int)|(?:mil)|(?:net)|(?:onl)|(?:org)|(?:pro)|(?:red)|(?:tel)|(?:uno)|(?:xxx)|(?:academy)|(?:accountant)|(?:accountants)|(?:actor)|(?:adult)|(?:africa)|(?:agency)|(?:airforce)|(?:apartments)|(?:app)|(?:archi)|(?:army)|(?:art)|(?:asia)|(?:associates)|(?:attorney)|(?:auction)|(?:audio)|(?:auto)|(?:autos)|(?:baby)|(?:band)|(?:bar)|(?:bargains)|(?:beer)|(?:berlin)|(?:best)|(?:bet)|(?:bid)|(?:bike)|(?:bio)|(?:black)|(?:blackfriday)|(?:blog)|(?:blue)|(?:boats)|(?:bond)|(?:boo)|(?:boston)|(?:bot)|(?:boutique)|(?:build)|(?:builders)|(?:business)|(?:buzz)|(?:cab)|(?:cafe)|(?:cam)|(?:camera)|(?:camp)|(?:capital)|(?:car)|(?:cards)|(?:care)|(?:careers)|(?:cars)|(?:casa)|(?:cash)|(?:casino)|(?:catering)|(?:center)|(?:ceo)|(?:cfd)|(?:charity)|(?:chat)|(?:cheap)|(?:christmas)|(?:church)|(?:city)|(?:claims)|(?:cleaning)|(?:click)|(?:clinic)|(?:clothing)|(?:cloud)|(?:club)|(?:codes)|(?:coffee)|(?:college)|(?:com)|(?:community)|(?:company)|(?:computer)|(?:condos)|(?:construction)|(?:consulting)|(?:contact)|(?:contractors)|(?:cooking)|(?:cool)|(?:coupons)|(?:courses)|(?:credit)|(?:creditcard)|(?:cricket)|(?:cruises)|(?:cyou)|(?:dad)|(?:dance)|(?:date)|(?:dating)|(?:day)|(?:degree)|(?:delivery)|(?:democrat)|(?:dental)|(?:dentist)|(?:desi)|(?:design)|(?:dev)|(?:diamonds)|(?:diet)|(?:digital)|(?:direct)|(?:directory)|(?:discount)|(?:doctor)|(?:dog)|(?:domains)|(?:download)|(?:earth)|(?:eco)|(?:education)|(?:email)|(?:energy)|(?:engineer)|(?:engineering)|(?:enterprises)|(?:equipment)|(?:esq)|(?:estate)|(?:events)|(?:exchange)|(?:expert)|(?:exposed)|(?:express)|(?:fail)|(?:faith)|(?:family)|(?:fans)|(?:farm)|(?:fashion)|(?:feedback)|(?:film)|(?:finance)|(?:financial)|(?:fish)|(?:fishing)|(?:fit)|(?:fitness)|(?:flights)|(?:florist)|(?:flowers)|(?:football)|(?:forsale)|(?:foundation)|(?:fun)|(?:fund)|(?:furniture)|(?:futbol)|(?:fyi)|(?:gallery)|(?:game)|(?:games)|(?:garden)|(?:gay)|(?:gdn)|(?:gifts)|(?:gives)|(?:giving)|(?:glass)|(?:global)|(?:gmbh)|(?:gold)|(?:golf)|(?:graphics)|(?:gratis)|(?:green)|(?:gripe)|(?:group)|(?:guide)|(?:guitars)|(?:guru)|(?:hair)|(?:hamburg)|(?:haus)|(?:health)|(?:healthcare)|(?:help)|(?:hiphop)|(?:hockey)|(?:holdings)|(?:holiday)|(?:homes)|(?:horse)|(?:hospital)|(?:host)|(?:hosting)|(?:house)|(?:how)|(?:icu)|(?:info)|(?:ink)|(?:institute)|(?:insure)|(?:international)|(?:investments)|(?:irish)|(?:jewelry)|(?:jetzt)|(?:juegos)|(?:kaufen)|(?:kids)|(?:kitchen)|(?:kiwi)|(?:krd)|(?:kyoto)|(?:land)|(?:lat)|(?:law)|(?:lawyer)|(?:lease)|(?:legal)|(?:lgbt)|(?:life)|(?:lighting)|(?:limited)|(?:limo)|(?:link)|(?:live)|(?:loan)|(?:loans)|(?:lol)|(?:london)|(?:love)|(?:ltd)|(?:ltda)|(?:luxury)|(?:maison)|(?:management)|(?:market)|(?:marketing)|(?:markets)|(?:mba)|(?:media)|(?:melbourne)|(?:meme)|(?:memorial)|(?:men)|(?:miami)|(?:mobi)|(?:moda)|(?:moe)|(?:mom)|(?:money)|(?:monster)|(?:mortgage)|(?:motorcycles)|(?:mov)|(?:movie)|(?:nagoya)|(?:name)|(?:navy)|(?:network)|(?:new)|(?:news)|(?:ngo)|(?:ninja)|(?:now)|(?:nyc)|(?:observer)|(?:okinawa)|(?:one)|(?:ong)|(?:onl)|(?:online)|(?:organic)|(?:osaka)|(?:page)|(?:paris)|(?:partners)|(?:parts)|(?:party)|(?:pet)|(?:phd)|(?:photo)|(?:photography)|(?:photos)|(?:pics)|(?:pictures)|(?:pink)|(?:pizza)|(?:place)|(?:plumbing)|(?:plus)|(?:poker)|(?:porn)|(?:press)|(?:pro)|(?:productions)|(?:prof)|(?:promo)|(?:properties)|(?:property)|(?:protection)|(?:pub)|(?:quest)|(?:racing)|(?:recipes)|(?:red)|(?:rehab)|(?:reise)|(?:reisen)|(?:rent)|(?:rentals)|(?:repair)|(?:report)|(?:republican)|(?:rest)|(?:restaurant)|(?:review)|(?:reviews)|(?:rip)|(?:rocks)|(?:rodeo)|(?:rsvp)|(?:run)|(?:saarland)|(?:sale)|(?:salon)|(?:sarl)|(?:sbs)|(?:school)|(?:schule)|(?:science)|(?:services)|(?:sex)|(?:sexy)|(?:sh)|(?:shoes)|(?:shop)|(?:shopping)|(?:show)|(?:singles)|(?:site)|(?:skin)|(?:soccer)|(?:social)|(?:software)|(?:solar)|(?:solutions)|(?:soy)|(?:space)|(?:spiegel)|(?:study)|(?:style)|(?:sucks)|(?:supply)|(?:support)|(?:surf)|(?:surgery)|(?:systems)|(?:tax)|(?:taxi)|(?:team)|(?:tech)|(?:technology)|(?:tel)|(?:theater)|(?:tips)|(?:tires)|(?:today)|(?:tools)|(?:top)|(?:tours)|(?:town)|(?:toys)|(?:trade)|(?:training)|(?:tube)|(?:uk)|(?:university)|(?:uno)|(?:vacations)|(?:ventures)|(?:vet)|(?:video)|(?:villas)|(?:vin)|(?:vip)|(?:vision)|(?:vlaanderen)|(?:vodka)|(?:vote)|(?:voting)|(?:voyage)|(?:wales)|(?:wang)|(?:watch)|(?:webcam)|(?:website)|(?:wedding)|(?:wiki)|(?:wine)|(?:work)|(?:works)|(?:world)|(?:wtf)|(?:xyz)|(?:yoga)|(?:yokohama)|(?:you)|(?:zone)|(?:ac)|(?:ad)|(?:ae)|(?:af)|(?:ag)|(?:ai)|(?:al)|(?:am)|(?:an)|(?:ao)|(?:aq)|(?:ar)|(?:as)|(?:at)|(?:au)|(?:aw)|(?:ax)|(?:az)|(?:ba)|(?:bb)|(?:bd)|(?:be)|(?:bf)|(?:bg)|(?:bh)|(?:bi)|(?:bj)|(?:bm)|(?:bn)|(?:bo)|(?:br)|(?:bs)|(?:bt)|(?:bv)|(?:bw)|(?:by)|(?:bz)|(?:ca)|(?:cc)|(?:cd)|(?:cf)|(?:cg)|(?:ch)|(?:ci)|(?:ck)|(?:cl)|(?:cm)|(?:cn)|(?:co)|(?:cr)|(?:cu)|(?:cv)|(?:cw)|(?:cx)|(?:cy)|(?:cz)|(?:de)|(?:dj)|(?:dk)|(?:dm)|(?:do)|(?:dz)|(?:ec)|(?:ee)|(?:eg)|(?:er)|(?:es)|(?:et)|(?:eu)|(?:fi)|(?:fj)|(?:fk)|(?:fm)|(?:fo)|(?:fr)|(?:ga)|(?:gb)|(?:gd)|(?:ge)|(?:gf)|(?:gg)|(?:gh)|(?:gi)|(?:gl)|(?:gm)|(?:gn)|(?:gp)|(?:gq)|(?:gr)|(?:gs)|(?:gt)|(?:gu)|(?:gw)|(?:gy)|(?:hk)|(?:hm)|(?:hn)|(?:hr)|(?:ht)|(?:hu)|(?:id)|(?:ie)|(?:il)|(?:im)|(?:in)|(?:io)|(?:iq)|(?:ir)|(?:is)|(?:it)|(?:je)|(?:jm)|(?:jo)|(?:jp)|(?:ke)|(?:kg)|(?:kh)|(?:ki)|(?:km)|(?:kn)|(?:kp)|(?:kr)|(?:kw)|(?:ky)|(?:kz)|(?:la)|(?:lb)|(?:lc)|(?:li)|(?:lk)|(?:lr)|(?:ls)|(?:lt)|(?:lu)|(?:lv)|(?:ly)|(?:ma)|(?:mc)|(?:md)|(?:me)|(?:mg)|(?:mh)|(?:mk)|(?:ml)|(?:mm)|(?:mn)|(?:mo)|(?:mp)|(?:mq)|(?:mr)|(?:ms)|(?:mt)|(?:mu)|(?:mv)|(?:mw)|(?:mx)|(?:my)|(?:mz)|(?:na)|(?:nc)|(?:ne)|(?:nf)|(?:ng)|(?:ni)|(?:nl)|(?:no)|(?:np)|(?:nr)|(?:nu)|(?:nz)|(?:om)|(?:pa)|(?:pe)|(?:pf)|(?:pg)|(?:ph)|(?:pk)|(?:pl)|(?:pm)|(?:pn)|(?:pr)|(?:ps)|(?:pt)|(?:pw)|(?:py)|(?:qa)|(?:re)|(?:ro)|(?:rs)|(?:ru)|(?:rw)|(?:sa)|(?:sb)|(?:sc)|(?:sd)|(?:se)|(?:sg)|(?:sh)|(?:si)|(?:sj)|(?:sk)|(?:sl)|(?:sm)|(?:sn)|(?:so)|(?:sr)|(?:st)|(?:su)|(?:sv)|(?:sx)|(?:sy)|(?:sz)|(?:tc)|(?:td)|(?:tf)|(?:tg)|(?:th)|(?:tj)|(?:tk)|(?:tl)|(?:tm)|(?:tn)|(?:to)|(?:tp)|(?:tr)|(?:tt)|(?:tv)|(?:tw)|(?:tz)|(?:ua)|(?:ug)|(?:uk)|(?:us)|(?:uy)|(?:uz)|(?:va)|(?:vc)|(?:ve)|(?:vg)|(?:vi)|(?:vn)|(?:vu)|(?:wf)|(?:ws)|(?:ye)|(?:yt)|(?:za)|(?:zm)|(?:zw))(?:/[^\\s()<>\\\"']*)?))[\"\\']",
+     0.5
+    ]
+   ],
+   "context": [
+    "url",
+    "website",
+    "link"
+   ]
+  }
+ ],
+ "iban_regex_per_country": {
+  "AL": "(AL)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "AD": "(AD)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "AT": "(AT)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "AZ": "(AZ)[0-9]{2}[ ]?([a-zA-Z0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "BH": "(BH)[0-9]{2}[ ]?([A-Z][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){2}",
+  "BY": "(BY)[0-9]{2}[ ]?([a-zA-Z0-9][ ]?){4}([0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "BE": "(BE)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "BA": "(BA)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "BR": "(BR)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){3}[A-Z][ ]?[a-zA-Z0-9][ ]?",
+  "BG": "(BG)[0-9]{2}[ ]?([A-Z][ ]?){4}([0-9][ ]?){4}[0-9][ ]?[0-9][ ]?([a-zA-Z0-9][ ]?){2}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){2}",
+  "CR": "(CR)[0-9]{2}[ ]?[0]([0-9][ ]?){3}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "HR": "(HR)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}[0-9][ ]?",
+  "CY": "(CY)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "CZ": "(CZ)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "DK": "(DK)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "DO": "(DO)[0-9]{2}[ ]?([A-Z][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "TL": "(TL)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){3}",
+  "EE": "(EE)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "FO": "(FO)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "FI": "(FI)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "FR": "(FR)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}([a-zA-Z0-9][ ]?){2}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}[a-zA-Z0-9][ ]?([0-9][ ]?){2}",
+  "GE": "(GE)[0-9]{2}[ ]?([a-zA-Z0-9][ ]?){2}([0-9][ ]?){2}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "DE": "(DE)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "GI": "(GI)[0-9]{2}[ ]?([A-Z][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){3}",
+  "GR": "(GR)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){3}[a-zA-Z0-9][ ]?([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){3}",
+  "GL": "(GL)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "GT": "(GT)[0-9]{2}[ ]?([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "HU": "(HU)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "IS": "(IS)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "IE": "(IE)[0-9]{2}[ ]?([a-zA-Z0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "IL": "(IL)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){3}",
+  "IT": "(IT)[0-9]{2}[ ]?[A-Z][ ]?([0-9][ ]?){3}([0-9][ ]?){4}([0-9][ ]?){3}[a-zA-Z0-9][ ]?([a-zA-Z0-9][ ]?){3}[a-zA-Z0-9][ ]?([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){3}",
+  "JO": "(JO)[0-9]{2}[ ]?([A-Z][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "KZ": "(KZ)[0-9]{2}[ ]?([0-9][ ]?){3}[a-zA-Z0-9][ ]?([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "XK": "(XK)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "KW": "(KW)[0-9]{2}[ ]?([A-Z][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){2}",
+  "LV": "(LV)[0-9]{2}[ ]?([A-Z][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}[a-zA-Z0-9][ ]?",
+  "LB": "(LB)[0-9]{2}[ ]?([0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "LI": "(LI)[0-9]{2}[ ]?([0-9][ ]?){4}[0-9][ ]?([a-zA-Z0-9][ ]?){3}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}[a-zA-Z0-9][ ]?",
+  "LT": "(LT)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "LU": "(LU)[0-9]{2}[ ]?([0-9][ ]?){3}[a-zA-Z0-9][ ]?([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "MT": "(MT)[0-9]{2}[ ]?([A-Z][ ]?){4}([0-9][ ]?){4}[0-9][ ]?([a-zA-Z0-9][ ]?){3}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){3}",
+  "MR": "(MR)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){3}",
+  "MU": "(MU)[0-9]{2}[ ]?([A-Z][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){3}[A-Z][ ]?",
+  "MD": "(MD)[0-9]{2}[ ]?([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "MC": "(MC)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}([a-zA-Z0-9][ ]?){2}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}[a-zA-Z0-9][ ]?([0-9][ ]?){2}",
+  "ME": "(ME)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "NL": "(NL)[0-9]{2}[ ]?([A-Z][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "MK": "(MK)[0-9]{2}[ ]?([0-9][ ]?){3}[a-zA-Z0-9][ ]?([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}[a-zA-Z0-9][ ]?([0-9][ ]?){2}",
+  "NO": "(NO)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){3}",
+  "PK": "(PK)[0-9]{2}[ ]?([a-zA-Z0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "PS": "(PS)[0-9]{2}[ ]?([a-zA-Z0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}[0-9][ ]?",
+  "PL": "(PL)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "PT": "(PT)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}[0-9][ ]?",
+  "QA": "(QA)[0-9]{2}[ ]?([A-Z][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}[a-zA-Z0-9][ ]?",
+  "RO": "(RO)[0-9]{2}[ ]?([A-Z][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "SM": "(SM)[0-9]{2}[ ]?[A-Z][ ]?([0-9][ ]?){3}([0-9][ ]?){4}([0-9][ ]?){3}[a-zA-Z0-9][ ]?([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){3}",
+  "SA": "(SA)[0-9]{2}[ ]?([0-9][ ]?){2}([a-zA-Z0-9][ ]?){2}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "RS": "(RS)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "SK": "(SK)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "SI": "(SI)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){3}",
+  "ES": "(ES)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "SE": "(SE)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "CH": "(CH)[0-9]{2}[ ]?([0-9][ ]?){4}[0-9][ ]?([a-zA-Z0-9][ ]?){3}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}[a-zA-Z0-9][ ]?",
+  "TN": "(TN)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "TR": "(TR)[0-9]{2}[ ]?([0-9][ ]?){4}[0-9][ ]?([a-zA-Z0-9][ ]?){3}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){2}",
+  "AE": "(AE)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){3}",
+  "GB": "(GB)[0-9]{2}[ ]?([A-Z][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "VA": "(VA)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){2}",
+  "VG": "(VG)[0-9]{2}[ ]?([a-zA-Z0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}",
+  "EG": "(EG)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}[0-9][ ]?",
+  "IQ": "(IQ)[0-9]{2}[ ]?([A-Z][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){3}",
+  "LY": "(LY)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}[0-9][ ]?",
+  "LC": "(LC)[0-9]{2}[ ]?([A-Z][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}",
+  "SC": "(SC)[0-9]{2}[ ]?([A-Z][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([0-9][ ]?){4}([A-Z][ ]?){3}",
+  "UA": "(UA)[0-9]{2}[ ]?([0-9][ ]?){4}([0-9][ ]?){2}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){4}([a-zA-Z0-9][ ]?){3}"
+ },
+ "iban_bos_eos": [
+  "^",
+  "$"
+ ]
+}

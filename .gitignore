@@ -1,0 +1,22 @@
+# local state and private data: never commit
+pii-scrubber.yaml
+known.yaml
+known.json
+private_terms.yaml
+vault.json
+requests.jsonl*
+canary.json
+alert_last.json
+state/
+.pii-scrubber/
+mock_seen.jsonl
+# tooling
+.tools/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/

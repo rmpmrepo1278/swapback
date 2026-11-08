@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pii-scrubber"
+version = "0.1.0"
+description = "Swap personal data for placeholders before an LLM call, restore it after, fail closed. OpenAI-compatible proxy."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "phonenumbers==9.0.43",
+    "pyahocorasick==2.3.1",
+    "PyYAML==6.0.3",
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.2"]
+
+[project.scripts]
+pii-scrubber = "pii_scrubber.core:main"
+pii-scrubber-proxy = "pii_scrubber.proxy:main"
+
+[tool.setuptools]
+packages = ["pii_scrubber"]
+
+[tool.setuptools.package-data]
+pii_scrubber = ["vendor/*.toml", "vendor/*.md", "vendor/gitleaks/*", "vendor/presidio/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
