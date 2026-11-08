@@ -193,8 +193,20 @@ class _Up(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         b = self.rfile.read(int(self.headers["Content-Length"]))
-        _Up.seen.append(b.decode())
-        j = json.loads(b)
+        _Up.seen.append(b.decode("utf-8", "replace"))
+        try:
+            j = json.loads(b)
+        except ValueError:
+            j = None
+        if not isinstance(j, dict) or "messages" not in j:          # embeddings / completions / non-JSON: echo back
+            echo = (j.get("input") if "input" in j else j.get("prompt")) if isinstance(j, dict) else None
+            o = json.dumps({"object": "list", "data": [{"embedding": [0.25, -0.5], "index": 0}], "echo": echo}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(o)))
+            self.end_headers()
+            self.wfile.write(o)
+            return
         ph = j["messages"][-1]["content"].split()[-1]
         if j.get("stream"):
             self.send_response(200)
@@ -466,3 +478,124 @@ def test_lowercase_variant_restores_lowercase(sc):
     assert sc.restore_text(o) == "jane said hi"
     r = sc.stream_restorer()
     assert "".join(r.feed(ch) for ch in o) + r.flush() == "jane said hi"
+
+
+# ---- fix2 (Nov 8 2026, after the Veil side-by-side): JSON under any content type; exact restore of every surface form ----
+FAKE_PHONES = ["(425) 555-0100", "425.555.0100", "+1 425-555-0100"]         # fictional 555-01xx numbers
+
+
+def test_phone_restore_keeps_each_written_form(sc):
+    txt = "call " + " or ".join(FAKE_PHONES) + " today"
+    o = sc.scrub_text(txt)
+    assert "555" not in o and o.count("\u00abPHONE_") == 3
+    assert sc.restore_text(o) == txt
+    for p in FAKE_PHONES:
+        o1 = sc.scrub_text("ring " + p)
+        assert "555" not in o1 and sc.restore_text(o1) == "ring " + p
+        r = sc.stream_restorer()
+        assert "".join(r.feed(ch) for ch in o1) + r.flush() == "ring " + p
+    sc.save_vault()                                    # a restart keeps the surface forms
+    sc2 = s.Scrubber(sc.cfg, known=KNOWN, vault_path=sc.vault_path)
+    assert sc2.restore_text(o) == txt
+
+
+def test_restore_exact_for_variant_forms_of_every_type(sc):
+    first = sc.scrub_text(TEXT)
+    variant = TEXT.replace("425-555-0182", "(425) 555-0182").replace("jdoe@corp.example", "JDoe@Corp.Example") \
+        .replace("+44 20 7946 0958", "+44 (0)20 7946 0958").replace("Jane Q Doe", "jane q doe")
+    second = sc.scrub_text(variant)
+    assert "7946" not in second and "JDoe" not in second
+    assert sc.restore_text(first) == TEXT and sc.restore_text(second) == variant
+    for k in ("arguments",):                            # tool-call arguments come back exact too (JSON-escaped path)
+        args = json.dumps({"to": FAKE_PHONES[0], "who": "Jane Q Doe"})
+        body = {"messages": [{"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+                "function": {"name": "send", k: args}}]}]}
+        sc.scrub_request(body)
+        sent = body["messages"][0]["tool_calls"][0]["function"][k]
+        assert "555" not in sent and "Jane" not in sent
+        assert sc.restore_obj(body)["messages"][0]["tool_calls"][0]["function"][k] == args
+
+
+def test_token_id_inputs_fail_closed(sc):
+    for b in ({"model": "m", "input": [101, 2023]}, {"model": "m", "input": [[101, 2023]]}, {"model": "m", "prompt": [5, 6]}):
+        with pytest.raises(s.ScrubError, match="token-id"):
+            sc.scrub_request(b)
+
+
+def _raw(px, path, data, headers):
+    import http.client
+    c = http.client.HTTPConnection("127.0.0.1", px, timeout=10)
+    c.request("POST", path, data, headers)                # exactly these headers: no default Content-Type
+    r = c.getresponse()
+    out = r.read().decode()
+    c.close()
+    return r.status, out
+
+
+CHAT = json.dumps({"model": "m", "messages": [{"role": "user", "content": "say Jane Q Doe"}]}).encode()
+
+
+@pytest.mark.parametrize("ctype", ["text/plain", "text/plain; charset=utf-8", None, "application/octet-stream",
+                                   "application/x-www-form-urlencoded"])
+def test_proxy_scrubs_json_under_any_content_type(proxy, ctype):
+    px, _, _ = proxy
+    _Up.seen.clear()
+    h = {"Content-Length": str(len(CHAT))}
+    if ctype:
+        h["Content-Type"] = ctype
+    code, out = _raw(px, "/v1/chat/completions", CHAT, h)
+    assert code == 200 and json.loads(out)["choices"][0]["message"]["content"] == "ok Jane Q Doe"
+    assert len(_Up.seen) == 1 and "Jane" not in _Up.seen[0] and "PERSON_" in _Up.seen[0]
+
+
+@pytest.mark.parametrize("phone", FAKE_PHONES)
+def test_proxy_phone_round_trip_text_plain(proxy, phone):
+    px, _, _ = proxy
+    _Up.seen.clear()
+    b = json.dumps({"model": "m", "messages": [{"role": "user", "content": "call " + phone}]}).encode()
+    code, out = _raw(px, "/v1/chat/completions", b, {"Content-Type": "text/plain", "Content-Length": str(len(b))})
+    assert code == 200 and json.loads(out)["choices"][0]["message"]["content"] == "ok " + phone   # as written
+    assert "555" not in _Up.seen[0]
+
+
+@pytest.mark.parametrize("path,key", [("/v1/embeddings", "input"), ("/v1/completions", "prompt")])
+@pytest.mark.parametrize("ctype", ["application/json", "text/plain", None])
+def test_proxy_embeddings_and_completions_scrubbed(proxy, path, key, ctype):
+    px, _, _ = proxy
+    _Up.seen.clear()
+    b = json.dumps({"model": "m", key: "notes on Jane Q Doe, jdoe@corp.example, " + FAKE_PHONES[0]}).encode()
+    h = {"Content-Length": str(len(b))}
+    if ctype:
+        h["Content-Type"] = ctype
+    code, out = _raw(px, path, b, h)
+    assert code == 200
+    assert not any(v in _Up.seen[0] for v in ("Jane", "jdoe@", "555"))
+    assert json.loads(out)["echo"] == json.loads(b)[key]          # restored exactly
+    b2 = json.dumps({"model": "m", key: [[101, 2023, 102]]}).encode()
+    _Up.seen.clear()
+    code, _ = _raw(px, path, b2, {"Content-Type": "application/json", "Content-Length": str(len(b2))})
+    assert code == 503 and _Up.seen == []
+
+
+@pytest.mark.parametrize("data,extra", [(b"hello Jane Q Doe", {"Content-Type": "text/plain"}),
+                                        (b"hello Jane Q Doe", {}),
+                                        (b'{"model": "m", "messages": [', {"Content-Type": "text/plain"}),
+                                        (b"\xff\xfe junk", {}),
+                                        (None, {"Content-Type": "text/plain", "Content-Encoding": "gzip"})])
+def test_proxy_unreadable_body_on_model_endpoint_fails_closed(proxy, data, extra):
+    import gzip
+    px, _, _ = proxy
+    _Up.seen.clear()
+    data = gzip.compress(CHAT) if data is None else data
+    code, _ = _raw(px, "/v1/chat/completions", data, dict(extra, **{"Content-Length": str(len(data))}))
+    assert code == 503 and _Up.seen == []
+
+
+def test_proxy_non_json_off_model_path_passes(proxy):
+    px, _, _ = proxy
+    _Up.seen.clear()
+    code, _ = _raw(px, "/other/upload", b"plain words", {"Content-Type": "text/plain", "Content-Length": "11"})
+    assert code == 200 and _Up.seen == ["plain words"]
+    b = json.dumps({"note": "Jane Q Doe"}).encode()              # JSON off the model path is still scrubbed
+    code, _ = _raw(px, "/other/upload", b, {"Content-Type": "text/plain", "Content-Length": str(len(b))})
+    assert code == 200 and "Jane" not in _Up.seen[-1]

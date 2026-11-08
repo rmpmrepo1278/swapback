@@ -378,7 +378,7 @@ class Scrubber:
         k = t + "|" + _norm_key(value) if t not in ("PHONE",) else "PHONE|" + re.sub(r"\D", "", value)[-10:]
         with self.lock:
             ph = self.fwd.get(k)
-            if ph is not None and t != "PHONE" and self.rev.get(ph) != value:
+            if ph is not None and self.rev.get(ph) != value:     # phones too: each written form keeps its own stand-in
                 k += "\x00" + value               # a case/spacing variant gets its own stand-in: restore is exact
                 ph = self.fwd.get(k)
             if ph is None:
@@ -496,7 +496,7 @@ class Scrubber:
         out, pos, local = [], 0, {}
         for s, e, t, v in self.spans(text):
             out.append(text[pos:s])
-            out.append(self.placeholder(v, t))
+            out.append(self.placeholder(text[s:e], t))   # vault keeps the exact surface form: restore is byte for byte (fix2)
             local[t] = local.get(t, 0) + 1
             pos = e
         out.append(text[pos:])
@@ -565,12 +565,20 @@ class Scrubber:
             return o
         try:
             self.reload_known()
+            if isinstance(body, dict):                # /v1/embeddings input, /v1/completions prompt as token ids: unreadable
+                for k in ("input", "prompt"):
+                    v = body.get(k)
+                    if isinstance(v, int) or (isinstance(v, list) and any(
+                            isinstance(x, int) or (isinstance(x, list) and any(isinstance(y, int) for y in x)) for x in v)):
+                        raise ScrubError("token-id %s cannot be checked" % k)
             walk(body)
             note = self.cfg.get("system_note")
             msgs = body.get("messages") if isinstance(body, dict) else None
             if note and isinstance(msgs, list) and msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system" \
                     and isinstance(msgs[0].get("content"), str) and note not in msgs[0]["content"]:
                 msgs[0]["content"] += "\n\n" + note
+        except ScrubError:
+            raise
         except Exception as e:
             raise ScrubError("scrub failed: %s" % type(e).__name__) from None
         if left[0]:

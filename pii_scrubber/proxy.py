@@ -4,6 +4,7 @@ headers and models pass through unchanged. Fail closed: a scrub error answers 50
 counts and types only. GET /scrubber/health -> {"ok": ...}. Request header X-Scrubber-Raw: 1 returns the provider's
 answer without the swap-back (used by `pii-scrubber canary` to prove what the provider saw)."""
 import copy, http.client, json, os, socket, sys, threading, time, urllib.parse
+_NOJSON = object()
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import core as S
@@ -98,10 +99,33 @@ class H(BaseHTTPRequestHandler):
         raw = self.headers.get("X-Scrubber-Raw") == "1"
         out = body
         swapped = False
-        if body and mode != "off" and "json" in (self.headers.get("Content-Type") or "json"):
-            counts = {}
+        # fix2 (Nov 8): scrub ANY body that parses as JSON, whatever its Content-Type (text/plain, none, ...). On a model
+        # endpoint (/v1/*), a body that is not readable JSON (encoded, chunked, not JSON) is blocked, never forwarded raw.
+        ctype = (self.headers.get("Content-Type") or "").lower()
+        cenc = (self.headers.get("Content-Encoding") or "identity").strip().lower()
+        chunked = "chunked" in (self.headers.get("Transfer-Encoding") or "").lower() and not self.headers.get("Content-Length")
+        model_ep = rec["path"].startswith(("/v1/", "/api/v1/"))
+        strict = model_ep or "json" in ctype
+        j = _NOJSON
+        if mode != "off" and body and cenc not in ("", "identity") and not strict:
+            rec["unscrubbed"] = "encoded non-model body"
+        elif mode != "off" and body and not strict:
             try:
                 j = json.loads(body)
+            except ValueError:
+                rec["unscrubbed"] = "non-JSON non-model body"
+        if mode != "off" and ((body and (strict or j is not _NOJSON)) or (chunked and model_ep)):
+            counts = {}
+            try:
+                if chunked and not body:
+                    raise S.ScrubError("chunked request body cannot be checked")
+                if cenc not in ("", "identity"):
+                    raise S.ScrubError("encoded request body (%s) cannot be checked" % cenc[:20])
+                if j is _NOJSON:
+                    try:
+                        j = json.loads(body)
+                    except ValueError:
+                        raise S.ScrubError("request body is not JSON (%s)" % (ctype.split(";")[0] or "no content type")) from None
                 rec["model"] = str(j.get("model") or "")[:60] if isinstance(j, dict) else ""
                 rec["stream"] = bool(isinstance(j, dict) and j.get("stream"))
                 if mode == "on":
