@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-11-09
+
+### Added
+- `--help` (`-h`) and `--version` on both commands. `swapback-proxy --help` says what the proxy does, which config it
+  reads (`SWAPBACK_CONFIG`, with the deprecated `PII_SCRUBBER_CONFIG` fallback), how to change the listen address
+  (`SWAPBACK_LISTEN` or `listen:`), and points to `swapback check-config` and `swapback health`.
+  `swapback COMMAND --help` describes each command.
+
+### Fixed
+- `swapback-proxy --help`, or any other argument, started the proxy on 127.0.0.1:8787. Help and version now print and
+  exit without loading the config or opening a port; an unknown option or argument prints the usage and exits with
+  status 2. With no arguments the proxy starts as before.
+- `swapback` with an unknown command printed the module notes and exited 0; it now prints the usage and an error and
+  exits 2. `--help` no longer needs a loadable config.
+
 ## [0.2.0] - 2026-11-09
 
 ### Changed

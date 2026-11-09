@@ -218,7 +218,7 @@ figures:
 **CLI.** `swapback check-config` (counts per type, never values), `swapback stats`, `swapback health`,
 `swapback scrub-file request.json`, and `swapback canary`, which sends a fake name and email through the running
 proxy and checks that the provider saw only placeholders and the client got the values back. `GET /scrubber/health` on
-the proxy returns counters.
+the proxy returns counters. Every command takes `--help` and `--version`; `swapback-proxy --help` lists the settings it reads and exits without starting.
 
 ## Comparison
 

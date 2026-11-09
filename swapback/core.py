@@ -24,7 +24,7 @@ Pieces
                 swap the outgoing strings are re-checked for known values and the request is blocked if one is left.
   Paths         a known value that is one segment of a filesystem path (/home/<user>/..., ~/...) is left alone, so
                 agents' file tools keep working; restore keeps the original case of every value.
-CLI: swapback stats | health | canary | scrub-file IN.json | check-config
+CLI: swapback stats | health | canary | scrub-file IN.json | check-config   (swapback --help)
 """
 import json, os, re, sys, threading, time, hashlib, tempfile
 
@@ -984,10 +984,66 @@ def canary(cfg=None, model=None, auth=None):
     return res
 
 
+CLI_ENV_HELP = '''configuration (environment):
+  SWAPBACK_CONFIG     path to the YAML config file. Default: ./swapback.yaml if it
+                      exists, else built-in defaults. The pre-0.2 name
+                      PII_SCRUBBER_CONFIG is still read when SWAPBACK_CONFIG is unset
+                      (deprecated); every SWAPBACK_* variable has the same fallback.
+  SWAPBACK_LISTEN     host:port the proxy listens on (default 127.0.0.1:8787), or
+                      `listen:` in the config. Off loopback also needs
+                      `allow_remote: true` in the config.
+  SWAPBACK_UPSTREAM   provider base URL (default https://api.openai.com), or
+                      `upstream:` in the config.
+  also: SWAPBACK_MODE, SWAPBACK_KNOWN_FILE, SWAPBACK_PRIVATE_TERMS,
+        SWAPBACK_STATE_DIR, SWAPBACK_ALERT_WEBHOOK, SWAPBACK_CANARY_MODEL.
+  Environment variables override the config file. See swapback.example.yaml.'''
+
+_COMMANDS = (
+    ("stats", "counts for the loaded config and vault (default command)",
+     "Print counts for the loaded config: known values, private rules, vault size. Never prints a value."),
+    ("check-config", "show what the proxy would load (counts per type, never values)",
+     "Load the config the way the proxy does and print the mode, listen address, upstream, state directory, and "
+     "counts per type of known values and private terms. Never prints a value. Run it before starting the proxy; a "
+     "broken config fails here."),
+    ("health", "status of the running proxy (mode, counters, last error)",
+     "Ask the running proxy at the config's listen address for its status (GET /scrubber/health): mode, request "
+     "and block counters, last error."),
+    ("canary", "end-to-end check through the running proxy (exit 1 on failure)",
+     "Send a fake name and email through the running proxy to the real provider. Passes when the provider saw only "
+     "placeholders and the reply got the values back; exits 1 otherwise. Needs canary_model in the config or "
+     "SWAPBACK_CANARY_MODEL, and the provider's key (OPENAI_API_KEY)."),
+    ("scrub-file", "scrub one request JSON locally and print counts and time",
+     "Scrub one OpenAI-style request JSON file locally (nothing is sent anywhere) and print the counts per type and "
+     "the time it took. Never prints a value."),
+)
+
+
+def _version():
+    from . import __version__
+    return __version__
+
+
+def cli_parser():
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="swapback", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="swapback: swap personal data for placeholders before an LLM call and put it back in the reply.\n"
+                    "These commands inspect the config and the running proxy; `swapback-proxy` starts the proxy.",
+        epilog=CLI_ENV_HELP + "\n\nWith no command, swapback runs `stats`. `swapback COMMAND --help` describes one command.")
+    ap.add_argument("--version", action="version", version="swapback " + _version())
+    sub = ap.add_subparsers(dest="cmd", metavar="COMMAND", title="commands")
+    for name, short, desc in _COMMANDS:
+        sp = sub.add_parser(name, help=short, description=desc)
+        if name == "scrub-file":
+            sp.add_argument("file", metavar="IN.json", help="an OpenAI-style request body (JSON)")
+    return ap
+
+
 def main(argv=None):
     argv = sys.argv if argv is None else argv
+    args = cli_parser().parse_args(argv[1:])          # --help/--version/bad input exit here, before any config load
+    cmd = args.cmd or "stats"
     cfg = load_cfg()
-    cmd = argv[1] if len(argv) > 1 else "stats"
     if cmd == "stats":
         s = Scrubber(cfg)
         print(json.dumps({"mode": cfg["mode"], "known": len(s.known), "private_rules": len(s.private),
@@ -1007,7 +1063,7 @@ def main(argv=None):
         s = Scrubber(cfg)
         counts = {}
         t0 = time.perf_counter()
-        with open(argv[2], encoding="utf-8") as f:
+        with open(args.file, encoding="utf-8") as f:
             body = json.load(f)
         s.scrub_request(body, counts)
         print(json.dumps({"counts": counts, "ms": round((time.perf_counter() - t0) * 1000, 2)}))
@@ -1017,8 +1073,6 @@ def main(argv=None):
         r = canary(cfg)
         print(json.dumps(r))
         sys.exit(0 if r["pass"] else 1)
-    else:
-        print(__doc__)
 
 
 if __name__ == "__main__":

@@ -280,7 +280,30 @@ def make_server(cfg=None):
     return srv
 
 
-def main():
+def cli_parser():
+    import argparse
+    from . import __version__
+    ap = argparse.ArgumentParser(
+        prog="swapback-proxy", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Start the swapback proxy: a local HTTP proxy in front of any OpenAI-compatible\n"
+            "endpoint (and Anthropic /v1/messages). Personal data in each request is swapped\n"
+            "for placeholders (PERSON_1, EMAIL_1, ...) before it leaves your machine; replies,\n"
+            "streamed or not, tool calls included, get the real values back. Fails closed: if\n"
+            "scrubbing fails, the request is answered 503 and nothing is forwarded.\n"
+            "Point your client's base URL at http://127.0.0.1:8787/v1 (or your listen address).\n"
+            "Runs in the foreground; prints one JSON line when it is listening."),
+        epilog=S.CLI_ENV_HELP + "\n\nsee also:\n"
+               "  swapback check-config   check the config before starting (counts, never values)\n"
+               "  swapback health         status of the running proxy (or GET /scrubber/health)\n"
+               "  swapback --help         all commands")
+    ap.add_argument("--version", action="version", version="swapback-proxy " + __version__)
+    return ap
+
+
+def main(argv=None):
+    argv = sys.argv if argv is None else argv
+    cli_parser().parse_args(argv[1:])            # --help/--version/unknown flags exit here; no config load, no port
     srv = make_server()
     h, p = srv.server_address[:2]
     print(json.dumps({"listening": "%s:%s" % (h, p), "mode": CFG["mode"], "known": len(SCR.known),
