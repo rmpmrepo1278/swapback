@@ -1112,13 +1112,134 @@ def flush_all(scr, state, template=None):
     """leftovers at [DONE]/EOF -> one synthetic chunk (or None)."""
     ev = dict(template or {})
     ev["choices"] = []
-    idx = sorted({k[0] for k in state if isinstance(k, tuple)})
+    idx = sorted({k[0] for k in state if isinstance(k, tuple) and isinstance(k[0], int)})
     for i in idx:
         ch = {"index": i, "delta": {}, "finish_reason": None}
         _flush_choice(scr, ch, i, state)
         if ch["delta"]:
             ev["choices"].append(ch)
     return ev if ev["choices"] else None
+
+
+# ---------------------------------------------------------------- OpenAI Responses API streams
+_RESP_TEXT = {"response.output_text.delta": ("delta", "response.output_text.done", "text"),
+              "response.refusal.delta": ("delta", "response.refusal.done", "refusal"),
+              "response.reasoning_summary_text.delta": ("delta", "response.reasoning_summary_text.done", "text"),
+              "response.reasoning_text.delta": ("delta", "response.reasoning_text.done", "text")}
+_RESP_DONE = {v[1]: (k, v[2]) for k, v in _RESP_TEXT.items()}
+_RESP_TOOL = {"response.function_call_arguments.delta": ("response.function_call_arguments.done", "arguments"),
+              "response.custom_tool_call_input.delta": ("response.custom_tool_call_input.done", "input")}
+_RESP_TOOL_DONE = {v[0]: (k, v[1]) for k, v in _RESP_TOOL.items()}
+
+
+def is_responses_event(ev):
+    return isinstance(ev, dict) and str(ev.get("type") or "").startswith("response.") and "choices" not in ev
+
+
+def _rkey(ev, kind):
+    return ("resp", kind, ev.get("output_index", 0), ev.get("content_index", ev.get("summary_index", 0)))
+
+
+def restore_responses_event(scr, ev, state):
+    """OpenAI Responses API stream event (parsed `data:` JSON); state = per-stream dict. Mutates ev and returns a list
+    of extra delta events to send BEFORE it. Text deltas (output_text, refusal, reasoning) are restored with a split
+    placeholder held until whole; function_call_arguments / custom_tool_call_input deltas go through the tool restore
+    policy (ToolArgsStream). What is held is sent as one more delta just before the matching `.done` event. Snapshots
+    (`.done` events, output_item.*, content_part.*, response.created/completed) are restored whole, tool items under
+    the same policy. sequence_number is renumbered so it stays unique and increasing when a delta is added."""
+    stats = state.setdefault("_stats", {})
+    forms = state.get("_forms")
+    rs = state.setdefault("_resp", {})
+    t = ev.get("type")
+    pre = []
+    if t in _RESP_TEXT:
+        k = _rkey(ev, t)
+        ent = rs.get(k)
+        if ent is None:
+            ent = rs[k] = {"r": scr.stream_restorer(False, stats, forms)}
+        _resp_feed(ent, ev)
+    elif t in _RESP_TOOL:
+        k = ("resp", "tool", ev.get("output_index", 0))
+        ent = rs.get(k)
+        if ent is None:
+            ent = rs[k] = {"r": ToolArgsStream(scr, True, stats, forms, state.setdefault("_resp_names", {}).get(ev.get("output_index", 0)))}
+        _resp_feed(ent, ev)
+    elif t in _RESP_DONE:
+        dt, field = _RESP_DONE[t]
+        ent = rs.get(_rkey(ev, dt))
+        pre += _resp_flush(rs, [_rkey(ev, dt)])
+        if isinstance(ev.get(field), str):              # the snapshot says what the restored deltas said
+            ev[field] = ent["out"] if ent is not None and ent["raw"] == ev[field] else \
+                scr.restore_text(ev[field], False, None, None)
+    elif t in _RESP_TOOL_DONE:
+        k = ("resp", "tool", ev.get("output_index", 0))
+        ent = rs.get(k)
+        pre += _resp_flush(rs, [k])
+        field = _RESP_TOOL_DONE[t][1]
+        if isinstance(ev.get(field), str):
+            if ent is not None and ent["raw"] == ev[field]:
+                ev[field] = ent["out"]
+            elif not scr.tool_keep(ev.get("name") or state.setdefault("_resp_names", {}).get(ev.get("output_index", 0)) or "",
+                                   ev[field]):
+                ev[field] = scr.restore_text(ev[field], True, None, None)
+    elif t in ("response.output_item.added", "response.output_item.done") and isinstance(ev.get("item"), dict):
+        item = ev["item"]
+        if t == "response.output_item.added" and tool_call_args(item) is not None:
+            state.setdefault("_resp_names", {})[ev.get("output_index", 0)] = tool_call_args(item)[0]
+        if t == "response.output_item.done":
+            oi = ev.get("output_index", 0)
+            pre += _resp_flush(rs, [k for k in list(rs) if k[2] == oi])
+        ev["item"] = scr.restore_obj(item, None, forms=None)
+    elif t in ("response.content_part.added", "response.content_part.done") and isinstance(ev.get("part"), dict):
+        ev["part"] = scr.restore_obj(ev["part"], None, forms=None)
+    elif t == "response.output_text.annotation.added" and isinstance(ev.get("annotation"), dict):
+        ev["annotation"] = scr.restore_obj(ev["annotation"], None, forms=None)
+    elif isinstance(ev.get("response"), dict):            # created / in_progress / completed / incomplete / failed
+        if t in ("response.completed", "response.incomplete", "response.failed"):
+            pre += _resp_flush(rs, list(rs))
+        ev["response"] = scr.restore_obj(ev["response"], None, forms=None)
+    return _resp_seq(state, pre, ev)
+
+
+def _resp_feed(ent, ev):
+    ent["tmpl"] = dict(ev)
+    if isinstance(ev.get("delta"), str):
+        ent["raw"] = ent.get("raw", "") + ev["delta"]
+        ev["delta"] = ent["r"].feed(ev["delta"])
+        ent["out"] = ent.get("out", "") + ev["delta"]
+
+
+def _resp_flush(rs, keys):
+    out = []
+    for k in keys:
+        ent = rs.pop(k, None)
+        if ent is None:
+            continue
+        rest = ent["r"].flush()
+        ent.setdefault("raw", "")
+        ent["out"] = ent.get("out", "") + rest
+        if rest and ent.get("tmpl"):
+            e = dict(ent["tmpl"])
+            e["delta"] = rest
+            out.append(e)
+    return out
+
+
+def _resp_seq(state, pre, ev):
+    off = state.get("_resp_seq", 0)
+    if isinstance(ev.get("sequence_number"), int):
+        for n, e in enumerate(pre):
+            e["sequence_number"] = ev["sequence_number"] + off + n
+        off += len(pre)
+        ev["sequence_number"] += off
+    state["_resp_seq"] = off
+    return pre
+
+
+def flush_responses(state):
+    """leftovers at EOF of a Responses stream -> extra delta events (normally empty)."""
+    rs = state.get("_resp") or {}
+    return _resp_flush(rs, list(rs))
 
 
 # ---------------------------------------------------------------- alerts (optional generic webhook)

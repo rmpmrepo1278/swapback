@@ -27,6 +27,16 @@ All notable changes to this project are documented here. The format follows
   prompts (text or JSONL) and writes candidate names, emails and phones to a separate `known.suggestions.yaml` for
   review; suggestions are never merged on their own. Standard library only.
 
+- OpenAI Responses API streams (`/v1/responses` with `stream: true`, as used by Codex) are restored: `output_text`,
+  refusal and reasoning deltas with the same split-placeholder handling as chat completions,
+  `function_call_arguments` and `custom_tool_call_input` deltas under the tool restore policy, and the `.done`,
+  `output_item.*`, `content_part.*` and `response.completed` snapshots. A held-back piece is sent as one more delta
+  before the matching `.done` event, and `sequence_number`s are shifted so they stay unique and increasing. Codex's
+  `local_shell_call` always keeps placeholders.
+- PyPI packaging: `python -m build` makes a clean sdist (with tests and fixtures) and wheel that pass
+  `twine check --strict`; CI checks this on every push. A `release` workflow builds and tests the wheel on a `v*` tag
+  and publishes with PyPI Trusted Publishing once the repository variable `PYPI_PUBLISH` is `true`. Not published yet.
+
 ### Changed
 - The "keep placeholders as written" system note now also reaches requests without a system message (a system message
   is added, but only when the request carries placeholders), a system or `developer` message with content parts,
@@ -34,6 +44,11 @@ All notable changes to this project are documented here. The format follows
   Responses API `instructions`. Before, it was only appended to a string system message.
 - The proxy tells the scrubber which API a request is for (`/v1/messages` = Anthropic, `/v1/responses` = Responses)
   so the note goes in the right place.
+
+- Package metadata: SPDX `license = "MIT"` with `license-files` (setuptools 77 or newer to build), vendor rule
+  sets declared as packages, more keywords. README links and images are absolute so they also work on PyPI.
+- README: Responses API streams moved from "doesn't catch yet" to restored; the stale "203 tests" line no longer
+  carries a count. SECURITY.md: 0.3.x is the supported line.
 
 ### Upgrading
 - If one of your egress-named tools must receive real values (your own mail tool, say), add it to

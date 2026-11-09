@@ -1,7 +1,7 @@
 """swapback.proxy: a small HTTP proxy in front of any OpenAI-compatible endpoint. JSON request bodies are scrubbed
 (swapback.core) before they leave and responses (plain JSON or SSE streams) are restored on the way back. Paths,
 headers and models pass through unchanged. Fail closed: a scrub error answers 503 and nothing is forwarded. Logs
-counts and types only. OpenAI chat-completion chunks and Anthropic /v1/messages events are both restored in streams.
+counts and types only. OpenAI chat-completion chunks, Responses API events and Anthropic /v1/messages events are all restored in streams.
 GET /scrubber/health -> {"ok": ...}. Request header X-Scrubber-Raw: 1 returns the provider's
 answer without the swap-back (used by `swapback canary` to prove what the provider saw)."""
 import copy, http.client, json, os, socket, sys, threading, time, urllib.parse
@@ -205,10 +205,11 @@ class H(BaseHTTPRequestHandler):
                         elif data:
                             try:
                                 ev = json.loads(data)
-                                if S.is_anthropic_event(ev):
-                                    for pre in S.restore_anthropic_event(SCR, ev, st):
-                                        self._chunk(b"event: content_block_delta\ndata: "
-                                                    + json.dumps(pre, ensure_ascii=False).encode() + b"\n\n")
+                                if S.is_responses_event(ev) or S.is_anthropic_event(ev):
+                                    restore_ev = S.restore_responses_event if S.is_responses_event(ev) \
+                                        else S.restore_anthropic_event
+                                    for pre in restore_ev(SCR, ev, st):
+                                        self._event(pre)
                                 else:
                                     if tmpl is None and isinstance(ev, dict):
                                         tmpl = {k: ev[k] for k in ("id", "object", "created", "model") if k in ev}
@@ -223,9 +224,8 @@ class H(BaseHTTPRequestHandler):
                 if held:
                     self._chunk(b"".join(held))
                 if restore:
-                    for pre in S.flush_anthropic(st):
-                        self._chunk(b"event: content_block_delta\ndata: " + json.dumps(pre, ensure_ascii=False).encode()
-                                    + b"\n\n")
+                    for pre in S.flush_anthropic(st) + S.flush_responses(st):
+                        self._event(pre)
                     fl = S.flush_all(SCR, st, tmpl)
                     if fl:
                         self._chunk(b"data: " + json.dumps(fl, ensure_ascii=False).encode() + b"\n\n")
@@ -260,6 +260,11 @@ class H(BaseHTTPRequestHandler):
                    tool_kept=stats.get("tool_kept", 0),
                    total_ms=round((time.perf_counter() - t0) * 1000, 1))
         _log(rec)
+
+    def _event(self, ev):
+        """one extra SSE event (a held-back delta), named by its own type."""
+        self._chunk(b"event: " + str(ev.get("type") or "message").encode() + b"\ndata: "
+                    + json.dumps(ev, ensure_ascii=False).encode() + b"\n\n")
 
     def _chunk(self, b):
         self.wfile.write(b"%x\r\n%s\r\n" % (len(b), b))

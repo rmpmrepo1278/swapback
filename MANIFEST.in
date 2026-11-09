@@ -1,0 +1,8 @@
+include README.md CHANGELOG.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md LICENSE THIRD_PARTY_NOTICES.md
+include swapback.example.yaml known.example.yaml private_terms.example.yaml
+recursive-include swapback/vendor *
+recursive-include tests *.py *.vcf *.csv *.jsonl
+recursive-include evals *
+recursive-include examples *
+recursive-include tools *.py
+global-exclude *.py[cod] __pycache__ *.bak *.bak-* .tmp-*

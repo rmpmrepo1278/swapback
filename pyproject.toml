@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,10 +7,12 @@ name = "swapback"
 version = "0.3.0"
 description = "Local proxy that swaps personal data for placeholders before an LLM call and restores it byte-exact in the reply. Fails closed. OpenAI-compatible."
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 authors = [{name = "rmpmrepo1278"}]
 requires-python = ">=3.11"
-keywords = ["pii", "privacy", "llm", "proxy", "redaction", "pseudonymization", "openai", "agents", "data-protection"]
+keywords = ["pii", "privacy", "llm", "proxy", "redaction", "anonymization", "pseudonymization", "openai", "anthropic",
+            "ai-agents", "data-protection"]
 dependencies = [
     "phonenumbers==9.0.43",
     "pyahocorasick==2.3.1",
@@ -20,7 +22,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
@@ -47,10 +48,12 @@ swapback = "swapback.core:main"
 swapback-proxy = "swapback.proxy:main"
 
 [tool.setuptools]
-packages = ["swapback"]
+packages = ["swapback", "swapback.vendor", "swapback.vendor.gitleaks", "swapback.vendor.presidio"]
 
 [tool.setuptools.package-data]
-swapback = ["vendor/*.toml", "vendor/*.md", "vendor/gitleaks/*", "vendor/presidio/*"]
+"swapback.vendor" = ["*.toml", "*.md"]
+"swapback.vendor.gitleaks" = ["*"]
+"swapback.vendor.presidio" = ["*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

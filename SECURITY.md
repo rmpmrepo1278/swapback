@@ -1,14 +1,15 @@
 # Security policy
 
 swapback is a privacy control, so a bypass is a security bug: any way for a known value or a detected pattern to
-reach the upstream unscrubbed, a request forwarded after a scrub error, or a restore that leaks one user's value into
-another context.
+reach the upstream unscrubbed, a request forwarded after a scrub error, a real value restored into a tool call that the README says keeps its
+placeholders, or a restore that leaks one user's value into another context.
 
 ## Supported versions
 
 | Version | Supported |
 |---|---|
-| 0.2.x | Yes |
+| 0.3.x | Yes |
+| 0.2.x | No (0.3.0 keeps placeholders in egress tool calls; please upgrade) |
 | 0.1.x (as pii-scrubber) | No |
 
 ## Reporting a vulnerability
@@ -30,5 +31,6 @@ you in the changelog unless you prefer not to be named.
 ## Scope notes
 
 Documented limits are not vulnerabilities on their own: names that were never listed (there is no NER), formats no
-pattern covers, streaming formats the README does not list as restored (such as OpenAI Responses API streams), and non-JSON bodies. A case where the code does not do what the README says
+pattern covers, streaming formats the README does not list as restored (such as legacy chat `function_call` deltas), tool calls the
+restore policy lets through by design (see "Tool calls" in the README), and non-JSON bodies. A case where the code does not do what the README says
 it does is in scope.

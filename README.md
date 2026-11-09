@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="swapback: keep personal data out of LLM requests, restore it byte-exact in the reply" width="100%">
+  <img src="https://raw.githubusercontent.com/rmpmrepo1278/swapback/main/docs/assets/banner.svg" alt="swapback: keep personal data out of LLM requests, restore it byte-exact in the reply" width="100%">
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/rmpmrepo1278/swapback/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg" alt="Python 3.11 | 3.12 | 3.13">
   <a href="https://github.com/rmpmrepo1278/swapback/actions/workflows/tests.yml"><img src="https://github.com/rmpmrepo1278/swapback/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
   <img src="https://img.shields.io/badge/dependencies-3-brightgreen.svg" alt="3 dependencies">
@@ -31,7 +31,7 @@ wrong while scrubbing, the request is blocked, not sent.
   ([Tool calls](#tool-calls)).
 - **No model needed.** Exact matching plus patterns. No NER model, no GPU, three small dependencies.
 
-<p align="center"><img src="docs/assets/before-after.svg" alt="The app sends real values, the provider sees placeholders, the app gets the real values back" width="100%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/rmpmrepo1278/swapback/main/docs/assets/before-after.svg" alt="The app sends real values, the provider sees placeholders, the app gets the real values back" width="100%"></p>
 
 ## Quickstart (60 seconds, no API key)
 
@@ -169,7 +169,7 @@ for them. `python examples/smoke.py` runs the same check offline against the moc
 
 ## How it works
 
-<p align="center"><img src="docs/assets/architecture.svg" alt="Architecture: app or agent, then swapback, then the LLM API, with the restore path back" width="100%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/rmpmrepo1278/swapback/main/docs/assets/architecture.svg" alt="Architecture: app or agent, then swapback, then the LLM API, with the restore path back" width="100%"></p>
 
 1. **Swap.** Every string in the JSON request body is scanned. Values from your known-values file are matched as whole
    words, case-insensitively, in their common written variants (a phone number also matches `(425) 555-0182`,
@@ -188,8 +188,10 @@ for them. `python examples/smoke.py` runs the same check offline against the moc
 3. **Forward or block.** Paths, headers (including `Authorization`) and the model name pass through unchanged. Any error
    while scrubbing answers `503` with a `scrubber_error`, and nothing is forwarded.
 4. **Restore.** Placeholders in the reply are swapped back to the original text: plain JSON responses anywhere in the
-   body, OpenAI-style `chat.completion.chunk` SSE streams and Anthropic Messages streams (`text_delta`, and
-   `input_json_delta` for `tool_use`), delta by delta. A placeholder split across chunks is held back until complete.
+   body, OpenAI-style `chat.completion.chunk` SSE streams, OpenAI Responses API streams (`output_text`, refusal and
+   reasoning deltas, `function_call_arguments` and `custom_tool_call_input` deltas, and the `.done` and
+   `response.completed` snapshots) and Anthropic Messages streams (`text_delta`, and `input_json_delta` for
+   `tool_use`), delta by delta. A placeholder split across chunks is held back until complete.
    Values inside tool-call arguments are JSON-escaped. Each variant comes back exactly as it was written in the request.
 
 Placeholders are stable: a local vault (`vault.json`, mode `0600`) maps each value to the same placeholder across
@@ -251,7 +253,7 @@ tool_restore:
 
 Copy `swapback.example.yaml` to `swapback.yaml`, or point `SWAPBACK_CONFIG` at any file. Every key is optional
 and has an environment override. Relative paths are relative to the config file. A minimal working setup is in
-[`examples/`](examples/).
+[`examples/`](https://github.com/rmpmrepo1278/swapback/tree/main/examples).
 
 | key | env | default | |
 |---|---|---|---|
@@ -313,7 +315,7 @@ Other open-source projects do the same job. This table reflects each project's o
 | Streaming restore | OpenAI chat-completions and Anthropic Messages SSE | Yes | Yes (SSE) | Unclear per API |
 | Tool-call arguments | Restored for every tool, JSON-escaped | Unclear | Unclear | Per-tool policy: unknown and network tools get pseudonyms |
 | On a scrub error | Fails closed (`503`) + egress re-check | Unclear | Unclear; documents a passthrough that forwards plaintext when masking is off or the app exits | Fails closed (`502`) + second guard |
-| APIs | OpenAI-compatible; Anthropic Messages (JSON and streaming) | OpenAI Chat + Responses, Anthropic, Codex | OpenAI, DeepSeek, Anthropic | Anthropic Messages, OpenAI Chat + Responses, Bedrock, Vertex, more |
+| APIs | OpenAI Chat and Responses, Anthropic Messages (JSON and streaming) | OpenAI Chat + Responses, Anthropic, Codex | OpenAI, DeepSeek, Anthropic | Anthropic Messages, OpenAI Chat + Responses, Bedrock, Vertex, more |
 | Beyond text | No | Browser extension, dashboard, route-to-local-LLM mode | Image/PDF OCR redaction, browser extension, dashboard | Encrypted vault, DB seeding, shell-safe escaping, MCP DB tool |
 
 **Where swapback fits:** you want something small you can read in an afternoon, that never needs a model, restores
@@ -331,7 +333,7 @@ never listed (PasteGuard, Maskit and Veil's NER), more APIs and streaming format
 
 ### What it doesn't catch yet
 
-Checked against 0.2.1 with nothing listed in `known.yaml`:
+Checked against 0.3.0 with nothing listed in `known.yaml`:
 
 - **Names you haven't listed.** There is no NER model, so "Priya Raman" in free text goes out as written.
 - **Dates of birth, unless right after an English label.** `Date of birth: 14/03/1987`, `DOB 1987-03-14` and
@@ -343,8 +345,9 @@ Checked against 0.2.1 with nothing listed in `known.yaml`:
   postcodes, cities, PO boxes and formats like `Calle Mayor 5` or `12 rue de Rivoli` are not.
 - **Free-form secrets and other identifiers.** Passwords, recovery codes, medical record numbers and coordinates are
   missed unless a rule covers them.
-- **OpenAI Responses API streams.** Streamed `/v1/responses` replies keep their placeholders. Non-streaming replies
-  are restored.
+- **Other streaming formats.** Legacy chat `function_call` deltas (the pre-tools format), Gemini's native API and
+  other provider-specific streams pass through with their placeholders. OpenAI chat, OpenAI Responses and Anthropic
+  Messages streams are restored.
 
 Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The details:
 
@@ -358,9 +361,10 @@ Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The
 - **Variants and restore.** All written variants of one listed value share one placeholder. A reply gets back the forms
   written in the same request, in order of occurrence; a reply with more mentions than the request reuses the last one.
   With no request context (`restore_text` on its own, the CLI) the spelling from your known file comes back.
-- **Streaming.** OpenAI `chat.completion.chunk` and Anthropic Messages streams are restored. Anthropic `thinking`
-  deltas are left as sent, since they are signed. Other streams, including the OpenAI Responses API, pass through with
-  placeholders left in. Non-streaming JSON replies of any shape are restored. The restore holds back at most one partial
+- **Streaming.** OpenAI `chat.completion.chunk`, OpenAI Responses API (`/v1/responses`, as used by Codex) and Anthropic
+  Messages streams are restored. Anthropic `thinking` deltas are left as sent, since they are signed. Other streams pass
+  through with placeholders left in. When a held-back piece is sent as an extra Responses delta, later
+  `sequence_number`s are shifted so they stay unique and increasing. Non-streaming JSON replies of any shape are restored. The restore holds back at most one partial
   placeholder (up to 24 characters) per stream, so chunks can arrive slightly regrouped; the text is unchanged.
 - **JSON bodies only.** Multipart uploads and binary bodies pass through untouched; `data:` URLs (images) are not scanned.
   Token-id inputs to embeddings and completions are blocked, since they cannot be checked.
@@ -393,7 +397,7 @@ laptop CPU (AMD Ryzen 7 4700U, Python 3.13):
   model cannot have your client send real values out through them. See [Tool calls](#tool-calls).
 - The request log records counts and types per request, never values.
 - `X-Scrubber-Raw: 1` returns the provider's answer without the restore. The canary uses it to prove what the provider saw.
-- Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
+- Report vulnerabilities privately; see [SECURITY.md](https://github.com/rmpmrepo1278/swapback/blob/main/SECURITY.md).
 
 ## Detection score (patterns only)
 
@@ -426,7 +430,7 @@ values are caught in every written variant above.
 
 ```bash
 pip install -e ".[test]"
-pytest -q                      # 203 tests, including the holdout score as a regression floor
+pytest -q                      # the full suite, including the holdout score as a regression floor
 python evals/run_holdout.py    # the table above (--misses lists the cases not caught)
 python examples/smoke.py       # end-to-end: mock upstream + proxy, plain and streamed
 ```
@@ -434,21 +438,23 @@ python examples/smoke.py       # end-to-end: mock upstream + proxy, plain and st
 The vendored rule sets live
 in `swapback/vendor` (see `THIRD_PARTY_NOTICES.md`); `tools/build_vendor.py` regenerates the Presidio patterns.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
+See [CONTRIBUTING.md](https://github.com/rmpmrepo1278/swapback/blob/main/CONTRIBUTING.md) and the [changelog](https://github.com/rmpmrepo1278/swapback/blob/main/CHANGELOG.md).
 
 ## Roadmap
 
 - ~~Restore Anthropic Messages streams.~~ Done in 0.1.1.
 - ~~Catch separator and case variants of listed values (NBSP, `.`, `_`, `-`, `%20`, all caps) under one placeholder.~~
   Done in 0.1.1.
-- Restore OpenAI Responses API streams.
+- ~~Restore OpenAI Responses API streams.~~ Done in 0.3.0.
+- ~~Keep placeholders in tool calls that could send data out.~~ Done in 0.3.0.
+- ~~Build the known-values file from a contacts export.~~ Done in 0.3.0 (`swapback known init`).
 - Optional, pluggable NER for names you never listed, off by default.
 - More national ID and address patterns, with tests from synthetic data.
-- Packaged release on PyPI.
+- Release on PyPI (the package builds and a Trusted Publishing workflow is in place; not published yet).
 
 Ideas and pull requests are welcome; open an issue first for anything large.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Bundled rule data: gitleaks (MIT) and Microsoft Presidio (MIT), see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT, see [LICENSE](https://github.com/rmpmrepo1278/swapback/blob/main/LICENSE). Bundled rule data: gitleaks (MIT) and Microsoft Presidio (MIT), see
+[THIRD_PARTY_NOTICES.md](https://github.com/rmpmrepo1278/swapback/blob/main/THIRD_PARTY_NOTICES.md).
