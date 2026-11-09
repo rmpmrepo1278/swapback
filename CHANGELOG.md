@@ -3,6 +3,41 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-11-09
+
+Fixes from an independent pre-launch review.
+
+### Security
+- **Listed phone numbers outside the US were sent unchanged.** A listed number with 10 digits, such as `98765 43210`
+  (India) or `0412 345 678` (Australia), was expanded only into US formats and lost the form as written, so it went to
+  the provider as written and the "known value still present" egress check missed it too. Now a listed phone is
+  matched as written, by its bare digits, and by a digit matcher that finds the same national number in any grouping,
+  with or without a country code or trunk 0 (`+91-98765-43210`, `(04) 1234 5678`). US formats are added only for
+  numbers that are actually US. The egress re-check uses the same matcher, so a listed phone left anywhere in a
+  request blocks it.
+- **An empty or truncated known file no longer silently protects nothing.** A configured known file with no values
+  blocks every request (`allow_empty_known: true` to allow it). A reload that finds the file empty or less than half
+  its previous size keeps protecting the previous values too, alerts and shows a warning in `/scrubber/health`; at
+  start, a file under half its size at the last start is flagged the same way.
+- The known file and the config are re-read on any content change (mtime, size, inode or ctime, then a content hash),
+  so a save by rename that keeps the old mtime is picked up.
+
+### Added
+- `swapback demo`: a built-in fake model plus the proxy, with made-up data and no config, key or network. It shows a
+  plain, a streamed and a tool-call request: what the app sent, what the model saw, what came back. It is now the
+  README's first step instead of the clone-only quickstart.
+- Blocked requests answer in the client API's error shape (OpenAI or Anthropic) with a readable reason and the header
+  `X-Swapback-Blocked`, and print one line on stderr. `/scrubber/health` has `warnings` and reports `ok: false` while
+  an empty known file blocks requests.
+- Listed names also match surname first (`Doe, Jane`) and without accents; listed IDs also match without their spaces
+  and dashes. Variants share the value's placeholder and restore as written.
+- Warnings in `swapback check-config`, the proxy's start line and `/scrubber/health`: example values from `swapback
+  init` still in the known file, and listed names that are ordinary phrases (`Will Hunt` / "I will hunt"), by line
+  number, never by value. `check-config` also notes listed phones that are not US numbers.
+
+### Changed
+- README: the `phone_regions` setting is explained (it is for the pattern detector, not for listed numbers).
+
 ## [0.4.0] - 2026-11-09
 
 ### Added

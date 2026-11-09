@@ -28,7 +28,8 @@ def _cfg_refresh():
     global CFG
     p = S.config_path()
     try:
-        mt = os.stat(p).st_mtime if p else 0
+        st = os.stat(p) if p else None
+        mt = (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns) if st else 0
     except OSError:
         return
     if mt != STATE["cfg_mtime"]:
@@ -71,9 +72,11 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send_json(self, code, obj):
+    def _send_json(self, code, obj, extra=None):
         b = json.dumps(obj).encode()
         self.send_response(code)
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
@@ -91,7 +94,13 @@ class H(BaseHTTPRequestHandler):
             return self._send_json(int(code), obj)
         if self.path.startswith("/scrubber/health"):
             _cfg_refresh()
-            return self._send_json(200, {"ok": True, "mode": CFG["mode"], "known": len(SCR.known), "vault": len(SCR.rev),
+            try:
+                SCR.reload_known()
+            except S.ScrubError as e:
+                STATE["last_error"] = str(e)[:120]
+            warn = SCR.warnings()
+            return self._send_json(200, {"ok": not SCR.known_block, "mode": CFG["mode"], "known": len(SCR.known),
+                                         "vault": len(SCR.rev), "warnings": warn,
                                          "requests": STATE["requests"], "blocked": STATE["blocked"],
                                          "errors": STATE["errors"], "last_error": STATE["last_error"],
                                          "uptime_s": int(time.time() - STATE["started"]),
@@ -162,8 +171,7 @@ class H(BaseHTTPRequestHandler):
                     STATE["last_error"] = msg[:120]
                     _alert_async("blocked a model request (fail-closed): " + msg[:120] + ". See requests.jsonl in the "
                                  "state dir.")
-                    return self._send_json(503, {"error": {"message": "swapback blocked this request (fail-closed): "
-                                                           + msg[:120], "type": "scrubber_error", "code": 503}})
+                    return self._blocked(msg, "scrubber_error")
                 out = body
             rec["swaps"] = counts
         rec["scrub_ms"] = round((time.perf_counter() - t0) * 1000, 2)
@@ -369,8 +377,21 @@ class H(BaseHTTPRequestHandler):
         rec.update(status=503, blocked=True, error=msg[:120])
         _log(rec)
         _alert_async("blocked a model request (fail-closed): " + msg[:120])
-        return self._send_json(503, {"error": {"message": "swapback blocked this request (fail-closed): " + msg[:120],
-                                               "type": "hook_error", "code": 503}})
+        return self._blocked(msg, "hook_error")
+
+    def _blocked(self, reason, kind):
+        """answer a blocked request with 503 in the error shape the client's API uses (OpenAI or Anthropic), with a
+        message written for the person reading the agent's screen, and one log line on stderr. Never a value."""
+        reason = reason[:120]
+        text = ("swapback blocked this request (fail-closed), so nothing was sent to the model: %s. Run `swapback health` "
+                "for details." % reason)
+        print("swapback: blocked %s %s: %s" % (self.command, self.path.split("?")[0], reason), file=sys.stderr,
+              flush=True)
+        if _api(self.path.split("?")[0]) == "anthropic":
+            obj = {"type": "error", "error": {"type": "api_error", "message": text}, "swapback": {"blocked": kind}}
+        else:
+            obj = {"error": {"message": text, "type": kind, "param": None, "code": 503}}
+        return self._send_json(503, obj, {"X-Swapback-Blocked": kind})
 
     def _respond(self, rsp, rec, ctx, restore, forms, t0):
         """before_forward answered the client itself; its JSON is restored like an upstream reply."""
@@ -413,6 +434,7 @@ def make_server(cfg=None, hooks=None):
     global CFG, SCR, UP, LOG, HOOKS
     CFG = cfg or S.load_cfg()
     SCR = S.Scrubber(CFG)
+    SCR.on_alert = _alert_async
     HOOKS = hooks if hooks is not None else HK.Hooks(CFG)
     HOOKS.setup(CFG)
     UP = urllib.parse.urlparse(CFG.get("upstream") or S.DEFAULTS["upstream"])
@@ -456,6 +478,8 @@ def main(argv=None):
     print(json.dumps({"listening": "%s:%s" % (h, p), "mode": CFG["mode"], "known": len(SCR.known),
                       "private_rules": len(SCR.private), "upstream": "%s://%s" % (UP.scheme, UP.netloc),
                       "hooks": HOOKS.name or None}), flush=True)
+    for w in SCR.warnings():
+        print("swapback: warning: " + w, file=sys.stderr, flush=True)
     srv.serve_forever()
 
 

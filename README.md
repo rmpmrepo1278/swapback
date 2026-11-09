@@ -25,7 +25,9 @@ machine (web, shell and send-style tools, or any call with a URL in it) keep the
 wrong while scrubbing, the request is blocked, not sent.
 
 - **Byte-exact restore.** The reply gets back the string as you wrote it: same case, same phone format, same spacing.
-- **Fails closed.** A scrub error, an unreadable body or a known value still present after the swap answers `503`.
+- **Fails closed.** A scrub error, an unreadable body, an empty known file or a known value still present after the
+  swap answers `503`, with a message in the API's own error shape that says what was blocked and why, so the agent
+  can show it, plus one log line on stderr.
 - **Agent-neutral.** Works with any client that lets you set a base URL. Tool-call arguments are restored for any tool,
   except calls that look like network or shell egress, which keep placeholders unless you allow them
   ([Tool calls](#tool-calls)).
@@ -33,34 +35,34 @@ wrong while scrubbing, the request is blocked, not sent.
 
 <p align="center"><img src="https://raw.githubusercontent.com/rmpmrepo1278/swapback/main/docs/assets/before-after.svg" alt="The app sends real values, the provider sees placeholders, the app gets the real values back" width="100%"></p>
 
-## Quickstart (60 seconds, no API key)
+## Quickstart (10 seconds, no API key)
 
-Needs Python 3.11 or newer. This runs the proxy in front of a bundled mock LLM that echoes your message, so you can see
-both sides.
+Needs Python 3.11 or newer.
 
 ```bash
-git clone https://github.com/rmpmrepo1278/swapback.git && cd swapback
-python3 -m venv .venv && . .venv/bin/activate && pip install -e .
-
-python examples/mock_upstream.py 8009 &                            # fake LLM on :8009
-SWAPBACK_CONFIG=examples/quickstart.yaml swapback-proxy &  # proxy on :8787
-sh examples/curl_demo.sh
+pip install swapback
+swapback demo
 ```
 
-Output:
+`swapback demo` starts a built-in fake model that echoes what it receives, puts the proxy in front of it, and sends a
+plain, a streamed and a tool-call request with made-up data. No config, no key, no network. Output (abridged):
 
 ```text
-== reply your app gets back (values restored)
-{"id": "m", "object": "chat.completion", ... "content": "You said: Draft a reply to Jane Q Doe (jdoe@corp.example) and ask her to call (425) 555-0182."} ...
-
-== same request, streamed (SSE), restored chunk by chunk
-You said: Draft a reply to Jane Q Doe (jdoe@corp.example) and ask her to call (425) 555-0182.
-
-== what the upstream (the "provider") actually received
-Draft a reply to «PERSON_1» («EMAIL_1») and ask her to call «PHONE_1».
+1) your app sends
+   Email Jane Q Doe at jane.doe@example.com or call (425) 555-0182 about Friday.
+2) the model receives
+   Email «PERSON_1» at «EMAIL_1» or call «PHONE_1» about Friday.
+3) your app gets back
+   You said: Email Jane Q Doe at jane.doe@example.com or call (425) 555-0182 about Friday.
+...
+5) tool calls: the model asks to fetch a URL and to send an email
+   web_fetch  {"url": "https://lookup.example/?q=«EMAIL_1»"}
+   send_email {"to": "jane.doe@example.com", "body": "Hi, about Friday"}
+PASS: the model never saw the made-up name, email or phone, and every reply came back exact.
 ```
 
-Stop both with `kill %1 %2`.
+From a clone, `examples/` has the same mock as a script (`examples/mock_upstream.py`, `examples/quickstart.yaml`,
+`examples/curl_demo.sh`) if you want to run the two processes yourself.
 
 ### Set it up for a real provider
 
@@ -105,8 +107,8 @@ swapback known init --scan past_prompts.jsonl          # suggests names, emails,
 
 Only Python's standard library and the existing dependencies are used; nothing is sent anywhere.
 
-Edit or build `known.yaml` **before** you start the proxy. The example values are fake, and a configured `known_file` that is
-missing blocks every request (`503`, fail-closed). Then:
+Edit or build `known.yaml` **before** you start the proxy. The example values are fake (`check-config` warns while they
+are still there), and a configured `known_file` that is missing or empty blocks every request (`503`, fail-closed). Then:
 
 ```bash
 swapback check-config     # counts per type, never values
@@ -152,9 +154,13 @@ restores Anthropic Messages streams (before, streamed replies in that mode kept 
 `http://127.0.0.1:8787` (no `/v1`) and the proxy's `upstream` to an Anthropic-compatible endpoint. That mode was checked
 end to end with OpenClaw against a mock Anthropic upstream, not yet against a live Claude model.
 
-**What a block looks like in an agent.** When the proxy blocks a request (fail-closed), it answers `503` with a
-`scrubber_error` message. Most agents retry a 503 several times and then show a generic error; OpenClaw retries for
-about a minute and then says it couldn't connect to the AI service. The reason is not shown in the agent. To see it:
+**What a block looks like in an agent.** When the proxy blocks a request (fail-closed), it answers `503` in the error
+shape of the API the client called (OpenAI `{"error": {...}}`, Anthropic `{"type": "error", ...}`), with the header
+`X-Swapback-Blocked` and a message written for a person: `swapback blocked this request (fail-closed), so nothing was
+sent to the model: <reason>. Run swapback health for details.` Agents that show the provider's error message show
+this one, usually after retrying a few times. Some show only a generic error (in our 0.4.0 test, OpenClaw said it
+couldn't connect to the AI service), so the proxy also prints one line per block on stderr
+(`swapback: blocked POST /v1/chat/completions: <reason>`; never a value). To see more:
 
 ```bash
 swapback health                          # mode, counters, last_error
@@ -301,7 +307,7 @@ and has an environment override. Relative paths are relative to the config file.
 | `mode` | `SWAPBACK_MODE` | `on` | `on` swap + restore; `watch` count only, forward the original; `off` pass through |
 | `listen` | `SWAPBACK_LISTEN` | `127.0.0.1:8787` | loopback only unless `allow_remote: true` |
 | `upstream` | `SWAPBACK_UPSTREAM` | `https://api.openai.com` | any OpenAI-compatible base URL (OpenRouter, LiteLLM, vLLM, llama.cpp, ...) |
-| `known_file` | `SWAPBACK_KNOWN_FILE` | none | your known values; configured but missing means requests are blocked |
+| `known_file` | `SWAPBACK_KNOWN_FILE` | none | your known values; configured but missing or empty means requests are blocked |
 | `private_terms_file` | `SWAPBACK_PRIVATE_TERMS` | none | codenames and figures that must not leave (below) |
 | `state_dir` | `SWAPBACK_STATE_DIR` | `~/.local/state/swapback` | vault and request log |
 | `alert_webhook` | `SWAPBACK_ALERT_WEBHOOK` | none | POSTs `{"text": ...}` when a request is blocked or the canary fails |
@@ -312,8 +318,18 @@ Renamed from pii-scrubber in 0.2.0: the old `PII_SCRUBBER_*` variables are still
 Also: `tool_restore` (see [Tool calls](#tool-calls)), `hooks` (see [Hooks](#hooks)), `phone_regions`, `url_swap`, `patterns` (turn single detectors
 off, e.g. `{IP: false}`), `extra_secret_rules`, `log_requests`, `alert_min_interval_s`, `system_note`.
 
-**Known values** (`known.example.yaml`). The exact strings to swap, by type. The file is re-read when it changes; no
-restart needed.
+**Known values** (`known.example.yaml`). The exact strings to swap, by type. The file is re-read whenever its content
+changes (also a save by rename); no restart needed. Guard rails, so a broken file never silently protects nothing:
+
+- A configured known file with no values blocks every request (set `allow_empty_known: true` if you mean it).
+- If a reload finds the file empty or less than half its previous size, the proxy keeps protecting the previous values
+  as well, sends an alert and lists a warning in `/scrubber/health`. Restart the proxy to accept a smaller list.
+- `swapback check-config`, the proxy's start line and `/scrubber/health` warn when the made-up example values from
+  `swapback init` are still in the file, and when a listed name is also an ordinary phrase (`Will Hunt` also matches
+  "I will hunt for the keys", because matching ignores case). Warnings name line numbers, never values.
+
+A listed name also matches surname first (`Doe, Jane Q`) and without accents (`Anais` for `Anaïs`); a listed ID also
+matches with its spaces and dashes removed (`QQ123456C` for `QQ 12 34 56 C`). Every variant shares the value's placeholder.
 
 ```yaml
 PERSON:
@@ -323,6 +339,12 @@ EMAIL:
 PHONE:
   - "425-555-0182"        # also matches (425) 555-0182, 425.555.0182, +14255550182, ...
 ```
+
+**Phones.** A listed phone is matched as you wrote it and by its digits in any grouping, with or without a country
+code or leading 0 (`98765 43210` also matches `+91 9876543210`). The common US formats are added only for numbers
+that are actually US. `phone_regions` (default `[US]`) is a different setting: it tells the *pattern detector* which
+countries' numbers to find when they are not listed and written without a `+` country code. Add yours, e.g.
+`phone_regions: [US, IN, AU]`.
 
 **Private terms** (`private_terms.example.yaml`). Things that are not PII but must not leave: phrases or regexes become
 `«PRIVATE_TERM_n»`, and money amounts are matched in every written form (`$2.47B`, `2.47 billion`, `$2,470M`) as

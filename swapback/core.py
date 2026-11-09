@@ -9,7 +9,8 @@ Pieces
   Known values  a YAML/JSON file you write (known_file): {TYPE: [values]} or [[value, TYPE], ...]. Matched with
                 pyahocorasick, case-insensitive, whole words; a multi-word value also matches with its words joined by
                 any whitespace run (NBSP, tabs), zero-width characters, '.', '_', '-' or '%20', and every such
-                variant shares the value's one placeholder. PHONE entries are expanded to their common formats.
+                variant shares the value's one placeholder. A PHONE entry matches as written and by its digits in
+                any grouping (US formats only for US numbers); names also match surname first and without accents.
   Private terms an optional YAML file (private_terms_file): `terms:` phrases or regexes -> «PRIVATE_TERM_n»,
                 `figures:` money amounts expanded to every written format ($1.5B, 1,500M, USD 1.5 billion, ...)
                 -> «PRIVATE_FIGURE_n».
@@ -24,7 +25,7 @@ Pieces
                 swap the outgoing strings are re-checked for known values and the request is blocked if one is left.
   Paths         a known value that is one segment of a filesystem path (/home/<user>/..., ~/...) is left alone, so
                 agents' file tools keep working; restore keeps the original case of every value.
-CLI: swapback stats | health | canary | scrub-file IN.json | check-config   (swapback --help)
+CLI: swapback demo | stats | health | canary | scrub-file IN.json | check-config | init   (swapback --help)
 """
 import fnmatch, json, os, re, sys, threading, time, hashlib, tempfile
 
@@ -232,15 +233,121 @@ class Forms:
         return lst[i] if i < len(lst) else lst[-1]
 
 
-def _phone_variants(p):
-    d = re.sub(r"\D", "", p)
-    if len(d) == 11 and d.startswith("1"):
+def _digits(s):
+    return re.sub(r"\D", "", s)
+
+
+_US_GROUPED = re.compile(r"(?:\+?1[\s.\-]?)?(?:\(\d{3}\)\s?\d{3}[\s.\-]\d{4}|\d{3}([\s.\-])\d{3}\1\d{4})")
+
+
+def _is_us_phone(p):
+    """True only for a number that is actually a US/NANP one: +1/1 and 10 digits, a number phonenumbers calls valid in
+    the US, or 10 digits written in the US 3-3-4 grouping. "98765 43210" (India) and "0412 345 678" (Australia) are not."""
+    s, d = p.strip(), _digits(p)
+    if len(d) == 11 and d[0] == "1":
+        if not s.lstrip("(").startswith(("+1", "1")):
+            return False
         d = d[1:]
-    if len(d) != 10:
-        return [p] if len(d) >= 7 else []
-    a, b, c = d[:3], d[3:6], d[6:]
-    return [d, "1" + d, "+1" + d, f"{a}-{b}-{c}", f"({a}) {b}-{c}", f"{a}.{b}.{c}", f"+1 {a} {b} {c}", f"+1 ({a}) {b}-{c}",
-            f"+1-{a}-{b}-{c}", f"{a} {b} {c}", f"+1 {a}-{b}-{c}"]
+    elif len(d) != 10 or s.startswith("+"):
+        return False
+    if d[0] not in "23456789" or d[3] not in "23456789":
+        return False                                   # NANP: area code and exchange never start with 0 or 1
+    if _US_GROUPED.fullmatch(s):
+        return True
+    try:
+        import phonenumbers
+        return phonenumbers.is_valid_number_for_region(phonenumbers.parse(s, "US"), "US")
+    except Exception:
+        return False
+
+
+def _phone_core(p):
+    """the digits that identify a listed phone however it is written: the national number without a country code or
+    trunk 0 ("+91 98765 43210" -> 9876543210, "0412 345 678" -> 412345678). None when under 7 digits."""
+    s, d = p.strip(), _digits(p)
+    if s.startswith("+"):
+        try:
+            import phonenumbers
+            d = str(phonenumbers.parse(s, None).national_number)
+        except Exception:
+            pass
+    elif len(d) == 11 and d[0] == "1" and _is_us_phone(p):
+        d = d[1:]
+    else:
+        d = d.lstrip("0")
+    return d if len(d) >= 7 else None
+
+
+def _phone_variants(p):
+    """the written forms a listed phone is matched in. Always the form as written and its bare digits; the common US
+    formats only for numbers that are actually US (_is_us_phone). Any other grouping of the same digits is still
+    caught by the digit matcher (Scrubber._phone_hits), which the egress re-check uses too."""
+    d = _digits(p)
+    if len(d) < 7:
+        return []
+    out = [p, d]
+    if _is_us_phone(p):
+        d = d[-10:]
+        a, b, c = d[:3], d[3:6], d[6:]
+        out += [d, "1" + d, "+1" + d, f"{a}-{b}-{c}", f"({a}) {b}-{c}", f"{a}.{b}.{c}", f"+1 {a} {b} {c}",
+                f"+1 ({a}) {b}-{c}", f"+1-{a}-{b}-{c}", f"{a} {b} {c}", f"+1 {a}-{b}-{c}"]
+    seen, res = set(), []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            res.append(x)
+    return res
+
+
+# ---------------------------------------------------------------- written variants of listed values (matched, never
+# stored in your file): surname first for names, accents stripped, compact IDs. They share the value's placeholder.
+_ID_TYPES = ("ID", "SSN", "ACCOUNT", "CARD", "IBAN", "ORDER")
+
+
+def _strip_accents(v):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", v) if not unicodedata.combining(c))
+
+
+def extra_variants(v, t):
+    """[variant] for a listed value: 'Last, First' and 'Last First' for a 2-4 word PERSON, the accent-free spelling,
+    and for IDs the form with spaces, dots and dashes removed."""
+    out = []
+    bases = [v] + ([_strip_accents(v)] if t not in ("EMAIL",) and _strip_accents(v) != v else [])
+    for b in bases:
+        if b != v:
+            out.append(b)
+        w = b.split()
+        if t == "PERSON" and 2 <= len(w) <= 4 and "," not in b:
+            out += [w[-1] + ", " + " ".join(w[:-1]), w[-1] + " " + " ".join(w[:-1])]
+    if t in _ID_TYPES and re.search(r"[\s.\-]", v) and re.search(r"\d", v):
+        c = re.sub(r"[\s.\-]", "", v)
+        if len(c) >= 5:
+            out.append(c)
+    seen, res = {_norm_key(v)}, []
+    for x in out:
+        if _norm_key(x) not in seen:
+            seen.add(_norm_key(x))
+            res.append(x)
+    return res
+
+
+def _known_originals(path):
+    """[(value, TYPE)] as written in the known file, before phone formats are added."""
+    import yaml
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = yaml.safe_load(f) or {}
+    except Exception:
+        return []
+    if isinstance(d, dict) and "known" in d:
+        d = d["known"]
+    if isinstance(d, dict):
+        return [(str(v), str(t).upper()) for t, vals in d.items() for v in (vals or []) if v is not None]
+    if isinstance(d, list):
+        return [((x.get("value"), str(x.get("type", "PERSON")).upper()) if isinstance(x, dict) else (str(x[0]), str(x[1]).upper()))
+                for x in d if x]
+    return []
 
 
 def load_known(path):
@@ -281,6 +388,68 @@ def load_known(path):
                 seen.add(k)
                 out.append((x, t))
     return out
+
+
+# ---------------------------------------------------------------- known-file warnings (shown by check-config, the
+# proxy's start line and /scrubber/health; they name lines and counts, never a value of yours)
+_COMMON = frozenset("""a about after again all also am an and any april are art as ask at
+august back bad baker banks be bear bell bill bird black bless blue bond book born
+brown bush but by call can cane care case cash chase cherry chin clay close cook
+cool cross crow dale dash dawn day dean dear december do don dove down drake duke
+dusty early east eve ever fair faith fall far field fields fish for ford forest fox
+frank free friday gale game gay gene gold golden good grace grant gray green grey grove
+hall hand happy hardy harmony hart have he heart heath her here hill him his holly
+honey hope house how hunt hunter i if in is it ivy jack jade jay jewel
+joy july june just king knight lake land lane last light lily long love low major
+march mark marsh mason may me might miles mill moon more morning moss my new next
+night north not now of off on one or page park pat patience peace pearl penny
+pine piper plain pope post price prince rain ray read reed rich ridge river rob robin
+rock rose royal ruby rush sage said sand saturday say see shade she sharp short sky
+snow so son south spring stark sterling still stone storm summer sun sunday sunny swift tan
+that the then they this thursday to tuesday under up us venture violet ward warren was
+water way we wednesday well west white who wild will win winter with wood woods yes
+you young""".split())
+
+
+def _line_of(text_lines, v):
+    for i, ln in enumerate(text_lines, 1):
+        if v in ln:
+            return i
+    return None
+
+
+def known_warnings(path, pairs=None):
+    """[warning] about a known file: values still left from the `swapback init` example, and listed names that are
+    also ordinary phrases ("Will Hunt" also matches "I will hunt for the keys", since matching ignores case)."""
+    if not path:
+        return []
+    try:
+        pairs = load_known(path) if pairs is None else pairs
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except (OSError, ScrubError):
+        return []
+    out = []
+    try:
+        import yaml
+        ex = yaml.safe_load(example_text("known.example.yaml")) or {}
+        exk = {_norm_key(str(v)) for vals in ex.values() for v in (vals or [])}
+    except Exception:
+        exk = set()
+    left = sorted({_norm_key(v) for v, _t in pairs} & exk)
+    if left:
+        out.append("known_file still holds %d example value(s) from `swapback init` (the made-up Jane Q Doe, ...); "
+                   "replace them with your own" % len(left))
+    phr = []
+    for v, t in pairs:
+        w = re.findall(r"[^\W\d_]+", v.lower())
+        if t in ("PERSON", "FAMILY", "ORG") and w and all(x in _COMMON for x in w) and _norm_key(v) not in exk:
+            phr.append(_line_of(lines, v))
+    if phr:
+        where = ", ".join("line %d" % n for n in phr[:8] if n) or "see the file"
+        out.append("%d listed name(s) are also ordinary words and will be swapped inside normal sentences, "
+                   "whatever the case (%s). Keep them if that is fine, or list a longer form" % (len(phr), where))
+    return out
+
 
 
 # ---------------------------------------------------------------- custom private terms
@@ -414,6 +583,7 @@ class Scrubber:
         self.known_path = self.cfg.get("known_file") or ""
         self.private_path = self.cfg.get("private_terms_file") or ""
         self.known_mtime = None
+        self.known_user, self.known_block, self.known_warning = None, "", ""
         self.cache = {}
         self.verified = set()
         self.private = []
@@ -471,13 +641,70 @@ class Scrubber:
 
     # known ---------------------------------------------------------
     def _set_known(self, known):
-        self.known = {}
+        self.known, self.alias, self.phone_core = {}, {}, {}
         for v, t in known:
-            self.known[_norm_key(v)] = (v, t)
-        self.known_m = detectors()[0].KnownMatcher(list(self.known))
-        self.known_var = [(k, _variant_rx(k), k.split(" ")[0], k.split(" ")[-1]) for k in self.known if " " in k]
+            self.known.setdefault(_norm_key(v), (v, t))
+        for k, (v, t) in list(self.known.items()):
+            for x in extra_variants(v, t):              # surname first, accent-free, compact ID: same placeholder
+                kx = _norm_key(x)
+                if kx not in self.known and kx not in self.alias:
+                    self.alias[kx] = k
+            if t == "PHONE":
+                c = _phone_core(v)
+                if c and c not in self.phone_core:
+                    self.phone_core[c] = k
+        keys = list(self.known) + list(self.alias)
+        self.known_m = detectors()[0].KnownMatcher(keys)
+        self.known_var = [(k, _variant_rx(k), k.split(" ")[0], k.split(" ")[-1]) for k in keys if " " in k]
         self.cache = {}
         self.verified = set()
+
+    _DIGIT_GROUP = re.compile(r"\d+")
+
+    def _phone_hits(self, text):
+        """listed phones written in any grouping: runs of digit groups (joined by spaces, dots, dashes, brackets) whose
+        digits are a listed phone's national number, optionally after a country code or trunk 0 of up to 3 digits."""
+        if not self.phone_core or sum(c.isdigit() for c in text) < 7:
+            return []
+        cores, top = self.phone_core, max(map(len, self.phone_core)) + 3
+        g = [(m.start(), m.end(), m.group(0)) for m in self._DIGIT_GROUP.finditer(text)]
+        out, i = [], 0
+        while i < len(g):
+            s0 = g[i][0]
+            if s0 and (text[s0 - 1].isalpha() or text[s0 - 1] == "_"):
+                i += 1
+                continue
+            acc, best = "", None
+            plus = text[max(0, s0 - 2):s0].endswith(("+", "+("))       # a country code may lead the digits
+            for j in range(i, len(g)):
+                if j > i and not re.fullmatch(r"[ \t\u00a0.\-()/]{1,3}", text[g[j - 1][1]:g[j][0]]):
+                    break
+                acc += g[j][2]
+                if len(acc) > top:
+                    break
+                cands = [acc] + ([acc[1:]] if acc[0] == "0" else []) + ([acc[k:] for k in (1, 2, 3)] if plus else [])
+                for x in cands:
+                    k = cores.get(x)
+                    if k is not None:
+                        e = g[j][1]
+                        if e < len(text) and (text[e].isalpha() or text[e] == "_"):
+                            continue
+                        best = (j, e, k)
+                        break
+                if best:
+                    break
+            if best:
+                e = best[1]
+                s = s0 - 1 if s0 and text[s0 - 1] == "+" else s0
+                if s and text[s - 1] == "(" and ")" in text[s:e]:
+                    s -= 1
+                    if s and text[s - 1] == "+":
+                        s -= 1
+                out.append((s, e, best[2]))
+                i = best[0] + 1
+            else:
+                i += 1
+        return out
 
     def _set_private(self, rules):
         by, gates = {}, {}           # one alternation per type: one pass over the text each, not one per entry
@@ -502,31 +729,109 @@ class Scrubber:
                     yield m.start(), m.end(), t, m.group(0)
 
     def _mtimes(self):
+        """a change signature per configured file: mtime, size, inode and ctime (ctime moves on every write and on a
+        rename, so a save that keeps the old mtime, e.g. os.replace from a sync tool, is still seen)."""
         out = []
         for p in (self.known_path, self.private_path):
             if not p:
                 out.append(None)
                 continue
             try:
-                out.append(os.stat(p).st_mtime)
+                st = os.stat(p)
             except OSError:
                 raise ScrubError("configured file is missing: %s" % os.path.basename(p)) from None
+            out.append((st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns))
         return tuple(out)
 
+    def _digest(self):
+        h = hashlib.sha256()
+        for p in (self.known_path, self.private_path):
+            if p:
+                try:
+                    with open(p, "rb") as f:
+                        h.update(f.read())
+                except OSError:
+                    raise ScrubError("configured file is missing: %s" % os.path.basename(p)) from None
+            h.update(b"\x00")
+        return h.hexdigest()
+
     def reload_known(self, force=False):
-        """re-read known_file / private_terms_file when they change. A configured file that is missing or unreadable
-        raises ScrubError, so the proxy fails closed instead of sending text it was told to protect."""
+        """re-read known_file / private_terms_file when their content changes. A configured file that is missing or
+        unreadable raises ScrubError, so the proxy fails closed instead of sending text it was told to protect.
+        Known-file guard: a configured known file with no values blocks every request (unless allow_empty_known);
+        a reload that finds the file empty or less than half its previous size keeps protecting the previous values
+        as well, raises an alert and shows a warning in /scrubber/health (restart the proxy to accept a smaller list)."""
         if self._known_fixed and self._private_fixed:
             return
         mt = self._mtimes()
         if not force and mt == self.known_mtime:
             return
         with self.lock:
+            dg = self._digest()
+            if not force and dg == getattr(self, "known_digest", None):
+                self.known_mtime = mt
+                return
             if not self._known_fixed:
-                self._set_known((load_known(self.known_path) if self.known_path else []) + CANARY)
+                new = load_known(self.known_path) if self.known_path else []
+                self._guard_known(new)
             if not self._private_fixed:
                 self._set_private(build_private_terms(self.private_path)[0] if self.private_path else [])
-            self.known_mtime = mt
+            self.known_mtime, self.known_digest = mt, dg
+
+    on_alert = None                                     # the proxy sets this to its own (hooks-aware, async) alert
+
+    def _alert(self, text):
+        if self.on_alert is not None:
+            self.on_alert(text)
+        elif self.cfg.get("alert_webhook"):
+            threading.Thread(target=alert, args=(self.cfg, text), daemon=True).start()
+
+    def _guard_known(self, new):
+        prev = getattr(self, "known_user", None)       # the values in force before this reload (None: first load)
+        n_old, n_new = len(prev or []), len(new)
+        self.known_block = ""
+        if self.known_path and n_new == 0 and not self.cfg.get("allow_empty_known") and not n_old:
+            self.known_block = ("known_file has no values (%s); add your names, emails and phones, or set "
+                                "allow_empty_known: true" % os.path.basename(self.known_path))
+        if prev is None and self.known_path:              # first load: compare with the size at the last start
+            cp = os.path.join(self.sdir, "known_count.json")
+            try:
+                last = int(json.load(open(cp, encoding="utf-8")).get("n", 0))
+            except (OSError, ValueError, AttributeError):
+                last = 0
+            if last >= 4 and n_new < last / 2.0:
+                self.known_warning = ("known_file has %d values, down from %d when the proxy last ran (%s); check "
+                                      "that the file is complete." % (n_new, last, os.path.basename(self.known_path)))
+                self._alert(self.known_warning)
+            if n_new != last:
+                try:
+                    _write_private(cp, {"n": n_new})
+                except OSError:
+                    pass
+            self.known_user = list(new)
+            self._set_known(list(new) + CANARY)
+            return
+        if prev and self.known_path and (n_new == 0 or (n_old >= 4 and n_new < n_old / 2.0)):
+            self.known_warning = ("known_file went from %d to %d values (%s); still protecting the previous values "
+                                  "too. Restart the proxy to accept the smaller list." %
+                                  (n_old, n_new, os.path.basename(self.known_path)))
+            keep = {_norm_key(v) for v, _t in new}
+            new = list(new) + [x for x in prev if _norm_key(x[0]) not in keep]
+            self._alert(self.known_warning)
+        elif n_new >= n_old / 2.0:
+            self.known_warning = ""
+        self.known_user = list(new)
+        self._set_known(list(new) + CANARY)
+
+    def warnings(self):
+        """plain-language warnings about the known file (blocked, shrunk, example values left, common-phrase names)."""
+        w = [x for x in (self.known_block, self.known_warning) if x]
+        if self.known_path and not self._known_fixed:
+            dg = getattr(self, "known_digest", None)
+            if getattr(self, "_warn_dg", 0) != dg:
+                self._warn_cache, self._warn_dg = known_warnings(self.known_path), dg
+            w += self._warn_cache
+        return w
 
     # spans ---------------------------------------------------------
     def spans(self, text):
@@ -538,6 +843,7 @@ class Scrubber:
         sp = []
         low = self.det.lower_same_len(text)
         for s, e, k in self._known_hits(text, low):
+            k = self.alias.get(k, k)
             v, t = self.known.get(k, (text[s:e], "PERSON"))
             sp.append((s, e, t, 0, text[s:e], (k, v)))   # one placeholder per known value; the surface form rides Forms
         for s, e, t, v in self._private_hits(text, low):
@@ -613,18 +919,21 @@ class Scrubber:
     def _known_hits(self, text, low=None):
         """known-value hits, minus those that are a segment of a filesystem path (/home/<user>/..., ~/...)."""
         hits = self.known_m.find(text, low)
+        more = []
         if self.known_var:
             low = low if low is not None else self.det.lower_same_len(text)
             more = [(m.start(), m.end(), k) for k, rx, w0, w1 in self.known_var if w0 in low and w1 in low
                     for m in rx.finditer(text)]
-            if more:
-                hits = sorted(hits + more, key=lambda h: (h[0], h[0] - h[1]))
-                out, last = [], -1
-                for h in hits:
-                    if h[0] >= last:
-                        out.append(h)
-                        last = h[1]
-                hits = out
+        if self.phone_core:
+            more += self._phone_hits(text)
+        if more:
+            hits = sorted(list(hits) + more, key=lambda h: (h[0], h[0] - h[1]))
+            out, last = [], -1
+            for h in hits:
+                if h[0] >= last:
+                    out.append(h)
+                    last = h[1]
+            hits = out
         if hits and "/" in text:
             hits = [h for h in hits if not in_fs_path(text, h[0], h[1])]
         return hits
@@ -673,6 +982,8 @@ class Scrubber:
             return o
         try:
             self.reload_known()
+            if self.known_block:
+                raise ScrubError(self.known_block)
             if isinstance(body, dict):                # /v1/embeddings input, /v1/completions prompt as token ids: unreadable
                 for k in ("input", "prompt"):
                     v = body.get(k)
@@ -1356,6 +1667,11 @@ _COMMANDS = (
      "Write swapback.yaml, known.yaml and private_terms.example.yaml into the current directory (or --dir) from the example files shipped with "
      "the package, with 0600 permissions. Existing files are left alone unless --force. Edit known.yaml (or build it "
      "with `swapback known init`), then run `swapback check-config`."),
+    ("demo", "see it work in 10 seconds: a built-in fake model, no API key, no config",
+     "Start a built-in fake model (it echoes what it receives) and a proxy in front of it on free loopback ports, "
+     "send one plain, one streamed and one tool-call request with made-up personal data, and show what your app "
+     "sent, what the model received and what came back. Needs no config, no API key and no network; writes only "
+     "to a temporary directory it removes. Exits 1 if the model saw a real value or the reply was not restored."),
     ("scrub-file", "scrub one request JSON locally and print counts and time",
      "Scrub one OpenAI-style request JSON file locally (nothing is sent anywhere) and print the counts per type and "
      "the time it took. Never prints a value."),
@@ -1421,6 +1737,9 @@ def main(argv=None):
     argv = sys.argv if argv is None else argv
     args = cli_parser().parse_args(argv[1:])          # --help/--version/bad input exit here, before any config load
     cmd = args.cmd or "stats"
+    if cmd == "demo":                                 # needs no config: it brings its own
+        from . import demo
+        sys.exit(demo.run())
     if cmd == "init":                                 # needs no config: it writes one
         sys.exit(init_files(args.dir, args.force))
     if cmd == "known":                                # works without a config; uses its known_file when there is one
@@ -1439,12 +1758,28 @@ def main(argv=None):
         out = {"mode": cfg["mode"], "listen": cfg["listen"], "upstream": cfg["upstream"], "state_dir": state_dir(cfg)}
         tp = ToolPolicy(cfg.get("tool_restore", True))
         out["tool_restore"] = dict(default=tp.default, keep_if_url=tp.keep_if_url, **tp.counts)
+        warn, notes = [], []
         if cfg.get("known_file"):
             k = load_known(cfg["known_file"])
             by = {}
             for _, t in k:
                 by[t] = by.get(t, 0) + 1
             out["known_by_type"] = by
+            if not k and not cfg.get("allow_empty_known"):
+                warn.append("known_file has no values: the proxy blocks every request until you add some (or set "
+                            "allow_empty_known: true)")
+            warn += known_warnings(cfg["known_file"], k)
+            phones = [v for v, t in _known_originals(cfg["known_file"]) if t == "PHONE"]
+            non_us = sum(1 for v in phones if not _is_us_phone(v))
+            if non_us:
+                notes.append("%d listed phone(s) are not US numbers: matched as written and by their digits in any "
+                             "grouping; US formats are added only for US numbers" % non_us)
+        else:
+            notes.append("no known_file: only the pattern detectors run (names are never detected without a list)")
+        if warn:
+            out["warnings"] = warn
+        if notes:
+            out["notes"] = notes
         if cfg.get("private_terms_file"):
             out["private"] = build_private_terms(cfg["private_terms_file"])[1]
         if cfg.get("hooks"):
