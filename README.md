@@ -322,7 +322,7 @@ values are caught in every written variant above.
 
 ```bash
 pip install -e ".[test]"
-pytest -q                      # 186 tests, including the holdout score as a regression floor
+pytest -q                      # 187 tests, including the holdout score as a regression floor
 python evals/run_holdout.py    # the table above (--misses lists the cases not caught)
 python examples/smoke.py       # end-to-end: mock upstream + proxy, plain and streamed
 ```
