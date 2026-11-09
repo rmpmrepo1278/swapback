@@ -33,7 +33,8 @@ is blocked, not sent.
 
 ## Quickstart (60 seconds, no API key)
 
-This runs the proxy in front of a bundled mock LLM that echoes your message, so you can see both sides.
+Needs Python 3.11 or newer. This runs the proxy in front of a bundled mock LLM that echoes your message, so you can see
+both sides.
 
 ```bash
 git clone https://github.com/rmpmrepo1278/pii-scrubber.git && cd pii-scrubber
@@ -57,13 +58,85 @@ You said: Draft a reply to Jane Q Doe (jdoe@corp.example) and ask her to call (4
 Draft a reply to «PERSON_1» («EMAIL_1») and ask her to call «PHONE_1».
 ```
 
-Stop both with `kill %1 %2`. To use a real provider, set `upstream:` in your config (for example
-`https://api.openai.com`) and point your client at the proxy:
+Stop both with `kill %1 %2`.
+
+### Set it up for a real provider
+
+```bash
+cp pii-scrubber.example.yaml pii-scrubber.yaml
+cp known.example.yaml known.yaml                    # then EDIT it: your names, emails, phones (see Configuration)
+cp private_terms.example.yaml private_terms.yaml    # optional: codenames and money figures
+```
+
+In `pii-scrubber.yaml`:
+
+```yaml
+upstream: https://api.openai.com      # a base URL WITHOUT /v1: the proxy appends the client's own path
+known_file: known.yaml
+private_terms_file: private_terms.yaml   # leave "" if you skipped the private terms file
+```
+
+Edit `known.yaml` **before** you start the proxy. The example values are fake, and a configured `known_file` that is
+missing blocks every request (`503`, fail-closed). Then:
+
+```bash
+pii-scrubber check-config     # counts per type, never values
+pii-scrubber-proxy            # listens on 127.0.0.1:8787
+```
+
+Point your client at the proxy. It keeps its usual path; only the host changes:
 
 ```python
 from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="sk-...")   # your key is forwarded as is
 ```
+
+`upstream` is joined with the client's path, so `upstream: https://api.openai.com/v1` would request `/v1/v1/...`.
+Other providers work the same way: `upstream: https://openrouter.ai` with client base URL
+`http://127.0.0.1:8787/api/v1`; `upstream: https://api.anthropic.com` with an Anthropic SDK base URL of
+`http://127.0.0.1:8787`.
+
+## Use with agents
+
+Any agent that lets you set a provider base URL can sit behind the proxy. Tested end to end with
+[OpenClaw](https://github.com/openclaw/openclaw) 2026.10.7: a fresh clone, the steps above and one provider block gave a
+scrubbed chat in a few minutes; replies, streamed replies and tool calls came back with the real values.
+
+```json5
+// OpenClaw config (openclaw.json)
+{
+  models: { providers: { scrub: {
+    baseUrl: "http://127.0.0.1:8787/v1",   // pii-scrubber
+    apiKey: "${PROVIDER_API_KEY}",         // your provider key; the proxy forwards it unchanged
+    api: "openai-completions",
+    models: [{ id: "your-model", name: "your-model via pii-scrubber", reasoning: false, input: ["text"],
+               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
+  } } },
+  agents: { defaults: { model: { primary: "scrub/your-model" } } },
+}
+```
+
+`api: "openai-completions"` was tested against a live model. `api: "anthropic-messages"` works from 0.1.1, which
+restores Anthropic Messages streams (before, streamed replies in that mode kept their placeholders): set `baseUrl` to
+`http://127.0.0.1:8787` (no `/v1`) and the proxy's `upstream` to an Anthropic-compatible endpoint. That mode was checked
+end to end with OpenClaw against a mock Anthropic upstream, not yet against a live Claude model.
+
+**What a block looks like in an agent.** When the proxy blocks a request (fail-closed), it answers `503` with a
+`scrubber_error` message. Most agents retry a 503 several times and then show a generic error; OpenClaw retries for
+about a minute and then says it couldn't connect to the AI service. The reason is not shown in the agent. To see it:
+
+```bash
+pii-scrubber health                          # mode, counters, last_error
+tail -n 5 ~/.local/state/pii-scrubber/requests.jsonl   # one line per request: status, blocked, error, swap counts
+```
+
+The usual causes are a missing or broken `known_file` / `private_terms_file`, a non-JSON or compressed body on a model
+endpoint, or a known value still present after the swap.
+
+**Check what the provider saw.** `requests.jsonl` records counts and types, never the text. To prove the provider got
+placeholders only, run `pii-scrubber canary` (set `canary_model` first): it sends a fake name and email through the
+running proxy, checks the provider's raw answer (`X-Scrubber-Raw: 1`) for the fake values and checks the restored answer
+for them. `python examples/smoke.py` runs the same check offline against the mock upstream.
 
 ## How it works
 
@@ -71,19 +144,24 @@ client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="sk-...")   # your 
 
 1. **Swap.** Every string in the JSON request body is scanned. Values from your known-values file are matched as whole
    words, case-insensitively, in their common written variants (a phone number also matches `(425) 555-0182`,
-   `425.555.0182`, `+14255550182`, ...). Detectors then catch what you did not list:
+   `425.555.0182`, `+14255550182`, ...; a multi-word value also matches with its words joined by non-breaking or
+   repeated spaces, tabs, zero-width characters, `.`, `_`, `-` or `%20`, so `Jane.Q.Doe`, `JANE Q DOE` and
+   `Jane%20Q%20Doe` are the same person under one placeholder). Detectors then catch what you did not list:
    - phone numbers via [`phonenumbers`](https://github.com/daviddrysdale/python-phonenumbers);
    - email, credit card (Luhn), IBAN, US SSN, IP address and profile URLs, from
      [Microsoft Presidio](https://github.com/microsoft/presidio)'s predefined recognizer patterns;
    - API keys and tokens, from the [gitleaks](https://github.com/gitleaks/gitleaks) default rules;
-   - a few local rules: street addresses, keyword-anchored account numbers and dates of birth, order numbers.
-2. **Re-check.** After the swap, every outgoing string is checked again for known values. If one is left, the request is
-   blocked.
+   - a few local rules: street addresses, keyword-anchored account numbers and dates of birth, order numbers, and
+     gap rules for emails written as `name [at] example [dot] org` or with a full-width `＠` or hidden zero-width
+     characters, and IPv6 addresses.
+2. **Re-check.** After the swap, every outgoing string is checked again for known values, with the same variant rules.
+   If one is left, the request is blocked.
 3. **Forward or block.** Paths, headers (including `Authorization`) and the model name pass through unchanged. Any error
    while scrubbing answers `503` with a `scrubber_error`, and nothing is forwarded.
 4. **Restore.** Placeholders in the reply are swapped back to the original text: plain JSON responses anywhere in the
-   body, and OpenAI-style `chat.completion.chunk` SSE streams chunk by chunk (a placeholder split across chunks is held
-   back until complete). Values inside tool-call arguments are JSON-escaped.
+   body, OpenAI-style `chat.completion.chunk` SSE streams and Anthropic Messages streams (`text_delta`, and
+   `input_json_delta` for `tool_use`), delta by delta. A placeholder split across chunks is held back until complete.
+   Values inside tool-call arguments are JSON-escaped. Each variant comes back exactly as it was written in the request.
 
 Placeholders are stable: a local vault (`vault.json`, mode `0600`) maps each value to the same placeholder across
 requests, so multi-turn conversations stay coherent. A short system note asks the model to keep placeholders as written.
@@ -152,10 +230,10 @@ Other open-source projects do the same job. This table reflects each project's o
 | Needs an ML model | No | Yes: GLiNER for names and places ([docs][pg-sem]) | Ships a local ONNX NER model | Optional: 46 MB ONNX NER |
 | Your own list of values | Yes, typed, reloaded live | Yes: `denylist` patterns ([docs][pg-mask]) | Yes: custom words and regexes | Yes: seeded from your data sources |
 | Restores values in replies | Yes, byte-exact as written | Yes ("supported placeholders") | Yes | Yes |
-| Streaming restore | OpenAI chat-completions SSE only | Yes | Yes (SSE) | Unclear per API |
+| Streaming restore | OpenAI chat-completions and Anthropic Messages SSE | Yes | Yes (SSE) | Unclear per API |
 | Tool-call arguments | Restored for every tool, JSON-escaped | Unclear | Unclear | Per-tool policy: unknown and network tools get pseudonyms |
 | On a scrub error | Fails closed (`503`) + egress re-check | Unclear | Unclear; documents a passthrough that forwards plaintext when masking is off or the app exits | Fails closed (`502`) + second guard |
-| APIs | OpenAI-compatible; Anthropic Messages non-streaming | OpenAI Chat + Responses, Anthropic, Codex | OpenAI, DeepSeek, Anthropic | Anthropic Messages, OpenAI Chat + Responses, Bedrock, Vertex, more |
+| APIs | OpenAI-compatible; Anthropic Messages (JSON and streaming) | OpenAI Chat + Responses, Anthropic, Codex | OpenAI, DeepSeek, Anthropic | Anthropic Messages, OpenAI Chat + Responses, Bedrock, Vertex, more |
 | Beyond text | No | Browser extension, dashboard, route-to-local-LLM mode | Image/PDF OCR redaction, browser extension, dashboard | Encrypted vault, DB seeding, shell-safe escaping, MCP DB tool |
 
 **Where pii-scrubber fits:** you want something small you can read in an afternoon, that never needs a model, restores
@@ -174,13 +252,17 @@ never listed (PasteGuard, Maskit and Veil's NER), more APIs and streaming format
 - **No NER.** It swaps what you list and what the patterns match. A name you never listed, written in free text, goes
   out as written. Keep the known-values file current.
 - **Pattern coverage is what the rules cover.** Phone numbers, emails, cards (Luhn), IBANs, US SSNs, IPs, profile URLs,
-  common API keys and a few local rules. National IDs other than the US SSN, free-form addresses and many other formats
-  are not detected unless you list them.
-- **Whole words, case-insensitive.** `Jane` does not match `Janet`. Nicknames and spelling variants need their own entries.
-- **Streaming.** Only OpenAI-style `chat.completion.chunk` SSE events are restored. Other streams, including Anthropic
-  Messages streaming, pass through with placeholders left in. Non-streaming JSON replies of any shape are restored.
-  The restore holds back at most one partial placeholder (up to 24 characters) per stream, so chunks can arrive
-  slightly regrouped; the text is unchanged.
+  common API keys and a few local rules. National IDs other than the US SSN, free-form addresses, dates of birth in
+  most label forms and many other formats are not detected unless you list them. See the measured score below.
+- **Whole words, case-insensitive.** `Jane` does not match `Janet`. Separator and case variants of a listed multi-word
+  value are caught (see How it works); nicknames, misspellings and other spellings need their own entries.
+- **Variants and restore.** All written variants of one listed value share one placeholder. A reply gets back the forms
+  written in the same request, in order of occurrence; a reply with more mentions than the request reuses the last one.
+  With no request context (`restore_text` on its own, the CLI) the spelling from your known file comes back.
+- **Streaming.** OpenAI `chat.completion.chunk` and Anthropic Messages streams are restored. Anthropic `thinking`
+  deltas are left as sent, since they are signed. Other streams, including the OpenAI Responses API, pass through with
+  placeholders left in. Non-streaming JSON replies of any shape are restored. The restore holds back at most one partial
+  placeholder (up to 24 characters) per stream, so chunks can arrive slightly regrouped; the text is unchanged.
 - **JSON bodies only.** Multipart uploads and binary bodies pass through untouched; `data:` URLs (images) are not scanned.
   Token-id inputs to embeddings and completions are blocked, since they cannot be checked.
 - **The model sees placeholders.** Answers that depend on the real value (spell this name, count the digits) will be
@@ -209,22 +291,53 @@ laptop CPU (AMD Ryzen 7 4700U, Python 3.13):
 - `X-Scrubber-Raw: 1` returns the provider's answer without the restore. The canary uses it to prove what the provider saw.
 - Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
 
+## Detection score (patterns only)
+
+`evals/holdout3.json` holds 64 synthetic cases (invented values only): 42 with something to catch, 22 that must pass
+untouched. `python evals/run_holdout.py` scores the pattern detectors with **no known values listed**, so it measures
+what the scrubber finds on its own. A case counts as caught only if every character of the expected value is swapped.
+These numbers are not tuned to the holdout; the 0.1.1 rules are generic (bracketed at/dot emails, full-width `＠` and
+zero-width characters in emails, IPv6).
+
+| Category | 0.1.0 | 0.1.1 |
+|---|---|---|
+| EMAIL | 1/5 | 5/5 |
+| IP address | 2/4 | 4/4 |
+| SSN | 2/2 | 2/2 |
+| PHONE | 2/5 | 2/5 |
+| ADDRESS | 2/6 | 2/6 |
+| SECRET (keys, passwords, passport/licence IDs) | 1/9 | 1/9 |
+| DATE OF BIRTH | 0/5 | 0/5 |
+| PERSON (no NER, by design) | 0/6 | 0/6 |
+| **All 42 positives** | **10/42** | **16/42** |
+| Negatives left untouched | 22/22 | 22/22 |
+| Round trip exact | 64/64 | 64/64 |
+
+Read it plainly: with nothing listed, the patterns catch well-formed contact data and miss most free-form secrets,
+names, dates of birth and non-US addresses. The two phone misses are UK fictional-range numbers (07700 900xxx) that
+the phone library rejects as invalid. **List what matters to you in `known.yaml` and `private_terms.yaml`;** listed
+values are caught in every written variant above.
+
 ## Development
 
 ```bash
 pip install -e ".[test]"
-pytest -q                      # 115 tests
+pytest -q                      # 186 tests, including the holdout score as a regression floor
+python evals/run_holdout.py    # the table above (--misses lists the cases not caught)
 python examples/smoke.py       # end-to-end: mock upstream + proxy, plain and streamed
 ```
 
-`evals/holdout3.json` holds 64 synthetic cases (invented values only) for checking detection. The vendored rule sets live
+The vendored rule sets live
 in `pii_scrubber/vendor` (see `THIRD_PARTY_NOTICES.md`); `tools/build_vendor.py` regenerates the Presidio patterns.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
 
 ## Roadmap
 
-- Restore Anthropic Messages and OpenAI Responses streams.
+- ~~Restore Anthropic Messages streams.~~ Done in 0.1.1.
+- ~~Catch separator and case variants of listed values (NBSP, `.`, `_`, `-`, `%20`, all caps) under one placeholder.~~
+  Done in 0.1.1.
+- Restore OpenAI Responses API streams.
 - Optional, pluggable NER for names you never listed, off by default.
 - More national ID and address patterns, with tests from synthetic data.
 - Packaged release on PyPI.

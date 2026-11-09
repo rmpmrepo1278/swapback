@@ -34,11 +34,13 @@ def test_round_trip_and_types(sc):
 
 def test_stable_placeholders_across_requests_and_case(sc):
     a = sc.scrub_text("Jane Q Doe wrote")
-    b = sc.scrub_text("reply to JANE Q DOE now")
+    f = s.Forms()
+    b = sc.scrub_text("reply to JANE Q DOE now", forms=f)
     assert a.split()[0] == "\u00abPERSON_1\u00bb"
     assert sc.scrub_text("Jane Q Doe again").split()[0] == "\u00abPERSON_1\u00bb"     # stable for the same form
-    assert "JANE" not in b
-    assert sc.restore_text(b) == "reply to JANE Q DOE now"      # the original case comes back
+    assert b == "reply to \u00abPERSON_1\u00bb now"                   # all-caps is the SAME person, not a second one
+    assert sc.restore_text(b, forms=f) == "reply to JANE Q DOE now"     # the request's own form comes back
+    assert sc.restore_text(b) == "reply to Jane Q Doe now"              # no request context: the known-file spelling
     assert sc.restore_text(a) == "Jane Q Doe wrote"
 
 
@@ -99,7 +101,7 @@ def test_fail_closed_on_error(sc, monkeypatch):
 
 
 def test_fail_closed_egress_leftover(sc, monkeypatch):
-    monkeypatch.setattr(sc, "scrub_text", lambda t, c=None: t)          # a broken swap
+    monkeypatch.setattr(sc, "scrub_text", lambda t, c=None, f=None: t)          # a broken swap
     with pytest.raises(s.ScrubError, match="egress"):
         sc.scrub_request({"messages": [{"role": "user", "content": "Jane Q Doe"}]})
 
@@ -198,6 +200,8 @@ class _Up(http.server.BaseHTTPRequestHandler):
             j = json.loads(b)
         except ValueError:
             j = None
+        if self.path.startswith("/v1/messages") and isinstance(j, dict):
+            return self._anthropic(j)
         if not isinstance(j, dict) or "messages" not in j:          # embeddings / completions / non-JSON: echo back
             echo = (j.get("input") if "input" in j else j.get("prompt")) if isinstance(j, dict) else None
             o = json.dumps({"object": "list", "data": [{"embedding": [0.25, -0.5], "index": 0}], "echo": echo}).encode()
@@ -225,6 +229,57 @@ class _Up(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(o)))
             self.end_headers()
             self.wfile.write(o)
+
+
+    def _anthropic(self, j):
+        """Anthropic /v1/messages: the reply quotes the request's placeholders back, as text and as tool_use input."""
+        phs = s.PH_RE.findall(json.dumps(j, ensure_ascii=False))
+        p, e = ("\u00ab%s_%s\u00bb" % phs[0]), ("\u00ab%s_%s\u00bb" % phs[1])
+        if not j.get("stream"):
+            o = json.dumps({"id": "msg_1", "type": "message", "role": "assistant", "content": [
+                {"type": "text", "text": "Hi " + p}, {"type": "tool_use", "id": "tu_1", "name": "send_email",
+                                                      "input": {"to": e, "name": p}}], "stop_reason": "tool_use"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(o)))
+            self.end_headers()
+            self.wfile.write(o)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        for ev in anthropic_fixture(p, e):
+            d = "event: %s\ndata: %s\n\n" % (ev["type"], json.dumps(ev, ensure_ascii=False))
+            self.wfile.write(b"%x\r\n%s\r\n" % (len(d.encode()), d.encode()))
+        self.wfile.write(b"0\r\n\r\n")
+
+
+def anthropic_fixture(p, e):
+    """the event shapes of a recorded /v1/messages stream (text block, then a tool_use block), with the person
+    placeholder p split across three text deltas and the email placeholder e split inside the tool's JSON deltas."""
+    args = json.dumps({"to": e, "subject": "hi", "name": p}, ensure_ascii=False)
+    cut = args.index(e) + 4
+    return [
+        {"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": [],
+                                              "model": "m", "stop_reason": None, "usage": {"input_tokens": 9, "output_tokens": 1}}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "ping"},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hi " + p[:3]}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": p[3:7]}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": p[7:] + ", writing to"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " you now " + p[:5]}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": p[5:]}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "tu_1", "name": "send_email",
+                                                                      "input": {}}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": ""}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": args[:cut]}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": args[cut:]}},
+        {"type": "content_block_stop", "index": 1},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": None}, "usage": {"output_tokens": 30}},
+        {"type": "message_stop"},
+    ]
 
 
 @pytest.fixture
@@ -310,12 +365,13 @@ def test_libraries_are_the_detectors(sc):
     assert set(det.versions()) == {"phonenumbers", "pyahocorasick"}
     assert pres.version == "2.2.366" and {r[0] for r in pres.rules} >= {"EMAIL", "CARD", "IBAN", "SSN", "IP", "URL"}
     assert len(gl.rules) >= 221 and not gl.skipped
-    assert not {t for t, p, g in s.PATTERNS} & {"EMAIL", "PHONE", "CARD", "IBAN", "SSN", "IP", "PROFILE"}
+    local = [t for t, p, g in s.PATTERNS if t in {"EMAIL", "PHONE", "CARD", "IBAN", "SSN", "IP", "PROFILE"}]
+    assert sorted(local) == ["EMAIL", "EMAIL", "IP"]     # only the 0.1.1 gap rules: at/dot + unicode-@ email, IPv6
     assert isinstance(sc.known_m.a, ahocorasick.Automaton)
 
 
 def test_phone_formatted_only(sc):
-    for t in ("job 4412360947", "id 14257860000", "at 2026-11-07 16:44", "host (100.64.58.40)"):
+    for t in ("job 4412360947", "id 12065550000", "at 2026-11-07 16:44", "host (100.64.0.10)"):
         assert "PHONE" not in [x[2] for x in sc.spans(t)], t
     for t in ("call (425) 555-0182", "+91 98765 43210", "cell 425.555.0182", "+1 425 555 0182"):
         assert [x[2] for x in sc.spans(t)] == ["PHONE"], t
@@ -455,9 +511,10 @@ def test_known_name_inside_path_left_alone(sc, text):
     ("ask Jane/Ozzie", "Jane"), ("corp.example/jane", "jane"), ("https://x.example/jane/a", "jane"),
     ("Jane wrote /home/jane/x", "Jane wrote"), ("files of Jane Q Doe/", "Jane Q Doe")])
 def test_names_outside_paths_still_swapped(sc, text, gone):
-    o = sc.scrub_text(text)
+    f = s.Forms()
+    o = sc.scrub_text(text, forms=f)
     assert gone not in o
-    assert sc.restore_text(o) == text
+    assert sc.restore_text(o, forms=f) == text
 
 
 def test_path_request_passes_egress_and_round_trips(sc):
@@ -473,10 +530,12 @@ def test_path_request_passes_egress_and_round_trips(sc):
 
 def test_lowercase_variant_restores_lowercase(sc):
     sc.scrub_text("Jane said hi")
-    o = sc.scrub_text("jane said hi")
+    f = s.Forms()
+    o = sc.scrub_text("jane said hi", forms=f)
     assert "jane" not in o
-    assert sc.restore_text(o) == "jane said hi"
-    r = sc.stream_restorer()
+    assert sc.restore_text(o, forms=f) == "jane said hi"
+    f.next.clear()
+    r = sc.stream_restorer(forms=f)
     assert "".join(r.feed(ch) for ch in o) + r.flush() == "jane said hi"
 
 
@@ -503,17 +562,19 @@ def test_restore_exact_for_variant_forms_of_every_type(sc):
     first = sc.scrub_text(TEXT)
     variant = TEXT.replace("425-555-0182", "(425) 555-0182").replace("jdoe@corp.example", "JDoe@Corp.Example") \
         .replace("+44 20 7946 0958", "+44 (0)20 7946 0958").replace("Jane Q Doe", "jane q doe")
-    second = sc.scrub_text(variant)
+    f = s.Forms()
+    second = sc.scrub_text(variant, forms=f)
     assert "7946" not in second and "JDoe" not in second
-    assert sc.restore_text(first) == TEXT and sc.restore_text(second) == variant
+    assert sc.restore_text(first) == TEXT and sc.restore_text(second, forms=f) == variant
     for k in ("arguments",):                            # tool-call arguments come back exact too (JSON-escaped path)
         args = json.dumps({"to": FAKE_PHONES[0], "who": "Jane Q Doe"})
         body = {"messages": [{"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
                 "function": {"name": "send", k: args}}]}]}
-        sc.scrub_request(body)
+        f = s.Forms()
+        sc.scrub_request(body, forms=f)
         sent = body["messages"][0]["tool_calls"][0]["function"][k]
         assert "555" not in sent and "Jane" not in sent
-        assert sc.restore_obj(body)["messages"][0]["tool_calls"][0]["function"][k] == args
+        assert sc.restore_obj(body, forms=f)["messages"][0]["tool_calls"][0]["function"][k] == args
 
 
 def test_token_id_inputs_fail_closed(sc):
@@ -599,3 +660,227 @@ def test_proxy_non_json_off_model_path_passes(proxy):
     b = json.dumps({"note": "Jane Q Doe"}).encode()              # JSON off the model path is still scrubbed
     code, _ = _raw(px, "/other/upload", b, {"Content-Type": "text/plain", "Content-Length": str(len(b))})
     assert code == 200 and "Jane" not in _Up.seen[-1]
+
+
+
+# ---- 0.1.1 (Nov 8 2026, after the OpenClaw test): written variants of a known value; Anthropic stream restore ----
+KNOWN2 = [("Jane Testperson", "PERSON"), ("jane@example.test", "EMAIL")]
+VARIANTS = ["Jane\u00a0Testperson", "Jane  Testperson", "Jane\tTestperson", "Jane \u00a0 Testperson", "Jane.Testperson",
+            "Jane_Testperson", "Jane-Testperson", "Jane%20Testperson", "JANE TESTPERSON", "jane testperson",
+            "Jane\u200bTestperson", "Jane\u3000Testperson", "jane.TESTPERSON", "Jane Testperson"]
+
+
+@pytest.fixture
+def sc2(tmp_path):
+    return s.Scrubber(dict(s.DEFAULTS, mode="on", state_dir=str(tmp_path / "st2")), known=KNOWN2)
+
+
+@pytest.mark.parametrize("v", VARIANTS)
+def test_known_variant_caught_same_placeholder_exact_restore(sc2, v):
+    ph = sc2.scrub_text("Jane Testperson")
+    f = s.Forms()
+    txt = "note for %s today" % v
+    o = sc2.scrub_text(txt, forms=f)
+    assert o == "note for %s today" % ph                       # one person, one placeholder
+    assert sc2.restore_text(o, forms=f) == txt                  # the form that was written comes back, byte for byte
+    assert sc2.leftover_known(txt) == 1                         # the egress re-check sees it too
+    body = {"model": "m", "messages": [{"role": "user", "content": txt}]}
+    sc2.scrub_request(body)
+    assert body["messages"][0]["content"] == o
+
+
+def test_all_variants_in_one_text_round_trip(sc2):
+    txt = " / ".join(VARIANTS) + " <jane@example.test> JANE@EXAMPLE.TEST"
+    f = s.Forms()
+    o = sc2.scrub_text(txt, forms=f)
+    assert "esterson" not in o.lower() and "@" not in o
+    assert set(s.PH_RE.findall(o)) == {("PERSON", "1"), ("EMAIL", "1")}
+    assert sc2.restore_text(o, forms=f) == txt
+    f.next.clear()                                              # the same, streamed one character at a time
+    r = sc2.stream_restorer(forms=f)
+    assert "".join(r.feed(ch) for ch in o) + r.flush() == txt
+
+
+@pytest.mark.parametrize("v", VARIANTS)
+def test_variant_that_slips_is_blocked(sc2, monkeypatch, v):
+    monkeypatch.setattr(sc2, "scrub_text", lambda t, c=None, f=None: t)       # a broken swap
+    with pytest.raises(s.ScrubError, match="egress"):
+        sc2.scrub_request({"messages": [{"role": "user", "content": "hi " + v}]})
+
+
+def test_variant_in_unscrubbed_field_is_blocked(sc2):
+    with pytest.raises(s.ScrubError, match="egress"):
+        sc2.scrub_request({"model": "m", "user": "Jane%20Testperson", "messages": [{"role": "user", "content": "hi"}]})
+
+
+@pytest.mark.parametrize("text", [
+    "Jane went to the Testperson museum", "Janet Testpersonal", "Jane,Testperson", "Jane/Testperson notes",
+    "the quick brown fox jumps over the lazy dog", "a well-known re.match_case e-mail of 20%", "jane", "testperson",
+    "x_Jane_Testperson_y", "Jane.Testpersons", "mail.Jane.Testperson"])
+def test_variants_no_false_positives(sc2, text):
+    assert sc2.scrub_text(text) == text
+    assert sc2.leftover_known(text) == 0
+
+
+@pytest.mark.parametrize("text", ["/home/x/Jane.Testperson/notes.md", "~/jane_testperson/a.txt",
+                                  '{"path": "/srv/JANE.TESTPERSON/x"}', "ls ./Jane-Testperson/"])
+def test_variant_inside_path_left_alone(sc2, text):
+    assert sc2.scrub_text(text) == text
+    assert sc2.leftover_known(text) == 0
+
+
+def test_private_term_variants(tmp_path):
+    p = tmp_path / "pt.yaml"
+    p.write_text("terms:\n  - Project Bluebird\n")
+    rules, _ = s.build_private_terms(str(p))
+    sc3 = s.Scrubber(dict(s.DEFAULTS, mode="on", state_dir=str(tmp_path / "st3")), known=[], private=rules)
+    f = s.Forms()
+    txt = "Project Bluebird, project.bluebird, PROJECT\u00a0BLUEBIRD and Project%20Bluebird"
+    o = sc3.scrub_text(txt, forms=f)
+    assert set(s.PH_RE.findall(o)) == {("PRIVATE_TERM", "1")} and sc3.restore_text(o, forms=f) == txt
+
+
+def test_proxy_variant_round_trip(proxy):
+    px, _, _ = proxy
+    for v in ("JANE.Q.DOE", "Jane\u00a0Q\u00a0Doe", "jane%20q%20doe"):
+        _Up.seen.clear()
+        b = json.dumps({"model": "m", "messages": [{"role": "user", "content": "say " + v}]}, ensure_ascii=False).encode()
+        code, out = _raw(px, "/v1/chat/completions", b, {"Content-Type": "application/json", "Content-Length": str(len(b))})
+        assert code == 200 and json.loads(out)["choices"][0]["message"]["content"] == "ok " + v
+        assert "PERSON_1" in _Up.seen[0] and "doe" not in _Up.seen[0].lower()
+
+
+# Anthropic /v1/messages streams
+def _anth_run(scr, events, forms=None):
+    st, out = {"_forms": forms}, []
+    for ev in events:
+        ev = json.loads(json.dumps(ev))
+        if s.is_anthropic_event(ev):
+            out += s.restore_anthropic_event(scr, ev, st)
+        out.append(ev)
+    out += s.flush_anthropic(st)
+    return out
+
+
+def _anth_collect(events):
+    text, js, order = "", "", []
+    for ev in events:
+        d = ev.get("delta") or {}
+        if ev["type"] == "content_block_delta":
+            order.append(ev["index"])
+            text += d.get("text", "")
+            js += d.get("partial_json", "")
+        if ev["type"] == "content_block_stop":
+            order.append(("stop", ev["index"]))
+    return text, js, order
+
+
+def test_anthropic_stream_restore_split_deltas_and_tool_json(sc):
+    p, e = sc.scrub_text("Jane Q Doe"), sc.scrub_text("jdoe@corp.example")
+    ev = _anth_run(sc, anthropic_fixture(p, e))
+    text, js, order = _anth_collect(ev)
+    assert text == "Hi Jane Q Doe, writing to you now Jane Q Doe"
+    assert json.loads(js) == {"to": "jdoe@corp.example", "subject": "hi", "name": "Jane Q Doe"}
+    assert order.index(("stop", 0)) > max(i for i, x in enumerate(order) if x == 0)    # nothing after its stop
+    assert "\u00ab" not in json.dumps(ev, ensure_ascii=False)
+
+
+def test_anthropic_every_split_position(sc):
+    p = sc.scrub_text("Jane Q Doe")
+    full = "say " + p + " and " + p + "!"
+    for i in range(1, len(full)):
+        for j in range(i + 1, len(full) + 1):
+            evs = [{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}]
+            evs += [{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": x}}
+                    for x in (full[:i], full[i:j], full[j:])]
+            evs.append({"type": "content_block_stop", "index": 0})
+            assert _anth_collect(_anth_run(sc, evs))[0] == "say Jane Q Doe and Jane Q Doe!"
+
+
+def test_anthropic_dangling_partial_flushed_before_stop(sc):
+    evs = [{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "price \u00abPER"}},
+           {"type": "content_block_stop", "index": 0}]
+    out = _anth_run(sc, evs)
+    assert [x["type"] for x in out] == ["content_block_delta", "content_block_delta", "content_block_stop"]
+    assert _anth_collect(out)[0] == "price \u00abPER"
+
+
+def test_anthropic_thinking_and_other_events_untouched(sc):
+    p = sc.scrub_text("Jane Q Doe")
+    evs = [{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "about " + p}},
+           {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "abc"}},
+           {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}]
+    assert _anth_run(sc, evs) == evs
+
+
+def _sse_events(raw):
+    out = []
+    for block in raw.split("\n\n"):
+        lines = [x for x in block.split("\n") if x]
+        if not lines:
+            continue
+        name = [x[6:].strip() for x in lines if x.startswith("event:")]
+        data = [x[5:].strip() for x in lines if x.startswith("data:")]
+        ev = json.loads(data[0])
+        assert name == [ev["type"]], block                        # every event keeps its own `event:` line
+        out.append(ev)
+    return out
+
+
+def test_proxy_anthropic_stream_restored(proxy):
+    px, _, _ = proxy
+    _Up.seen.clear()
+    b = json.dumps({"model": "m", "stream": True, "max_tokens": 50, "messages": [
+        {"role": "user", "content": "write to Jane Q Doe at jdoe@corp.example"}]}).encode()
+    code, out = _raw(px, "/v1/messages", b, {"Content-Type": "application/json", "Content-Length": str(len(b)),
+                                              "anthropic-version": "2023-06-01"})
+    assert code == 200
+    assert "Jane" not in _Up.seen[0] and "jdoe" not in _Up.seen[0]
+    evs = _sse_events(out)
+    text, js, _ = _anth_collect(evs)
+    assert text == "Hi Jane Q Doe, writing to you now Jane Q Doe"
+    assert json.loads(js) == {"to": "jdoe@corp.example", "subject": "hi", "name": "Jane Q Doe"}
+    assert "\u00ab" not in out and evs[-1]["type"] == "message_stop"
+
+
+def test_proxy_anthropic_json_restored(proxy):
+    px, _, _ = proxy
+    b = json.dumps({"model": "m", "max_tokens": 50, "messages": [
+        {"role": "user", "content": "write to JANE Q DOE at jdoe@corp.example"}]}).encode()
+    code, out = _raw(px, "/v1/messages", b, {"Content-Type": "application/json", "Content-Length": str(len(b))})
+    j = json.loads(out)
+    assert code == 200 and j["content"][0]["text"] == "Hi JANE Q DOE"
+    assert j["content"][1]["input"] == {"to": "jdoe@corp.example", "name": "JANE Q DOE"}
+
+
+@pytest.mark.parametrize("text,value", [
+    ("mail ren [at] example [dot] org today", "ren [at] example [dot] org"),
+    ("mail mila(at)sample(dot)example.", "mila(at)sample(dot)example"),
+    ("mail ann (at) mail.example.org", "ann (at) mail.example.org"),
+    ("mail kay\uff20sample.example now", "kay\uff20sample.example"),
+    ("mail ori\u200b@example.org now", "ori\u200b@example.org"),
+    ("host 2001:db8:7::25 up", "2001:db8:7::25"),
+    ("url https://[2001:db8::7:25]:443/v2", "2001:db8::7:25"),
+    ("full 2001:0db8:0007:0000:0000:0000:0000:0025.", "2001:0db8:0007:0000:0000:0000:0000:0025")])
+def test_generic_gap_patterns(sc, text, value):
+    f = s.Forms()
+    o = sc.scrub_text(text, forms=f)
+    assert value not in o and sc.restore_text(o, forms=f) == text
+
+
+@pytest.mark.parametrize("text", ["meet (at) noon", "see [at] the end. done", "at 12:30:45 today", "mac 00:1a:2b:3c:4d:5e",
+                                  "local ::1 and ::", "std::vector<int> a::b", "ratio 3:2:1", "dead:beef", "fe80::"])
+def test_generic_gap_patterns_no_false_positives(sc, text):
+    assert sc.scrub_text(text) == text
+
+
+def test_tool_json_escaped_placeholder_split_every_position(sc):
+    p, e = sc.scrub_text("Jane Q Doe"), sc.scrub_text("jdoe@corp.example")
+    args = json.dumps({"to": e, "name": p, "note": "a\\b \"q\""})          # ensure_ascii: «» arrive as \u00ab..\u00bb
+    assert "\\u00ab" in args
+    want = json.dumps({"to": "jdoe@corp.example", "name": "Jane Q Doe", "note": "a\\b \"q\""})
+    for i in range(1, len(args)):
+        for j in range(i + 1, len(args) + 1, 3):
+            evs = [{"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": x}}
+                   for x in (args[:i], args[i:j], args[j:])] + [{"type": "content_block_stop", "index": 1}]
+            assert json.loads(_anth_collect(_anth_run(sc, evs))[1]) == json.loads(want)

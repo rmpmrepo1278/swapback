@@ -1,7 +1,8 @@
 """pii_scrubber.proxy: a small HTTP proxy in front of any OpenAI-compatible endpoint. JSON request bodies are scrubbed
 (pii_scrubber.core) before they leave and responses (plain JSON or SSE streams) are restored on the way back. Paths,
 headers and models pass through unchanged. Fail closed: a scrub error answers 503 and nothing is forwarded. Logs
-counts and types only. GET /scrubber/health -> {"ok": ...}. Request header X-Scrubber-Raw: 1 returns the provider's
+counts and types only. OpenAI chat-completion chunks and Anthropic /v1/messages events are both restored in streams.
+GET /scrubber/health -> {"ok": ...}. Request header X-Scrubber-Raw: 1 returns the provider's
 answer without the swap-back (used by `pii-scrubber canary` to prove what the provider saw)."""
 import copy, http.client, json, os, socket, sys, threading, time, urllib.parse
 _NOJSON = object()
@@ -114,6 +115,7 @@ class H(BaseHTTPRequestHandler):
                 j = json.loads(body)
             except ValueError:
                 rec["unscrubbed"] = "non-JSON non-model body"
+        forms = S.Forms()                               # surface forms seen in this request, for exact restore
         if mode != "off" and ((body and (strict or j is not _NOJSON)) or (chunked and model_ep)):
             counts = {}
             try:
@@ -129,7 +131,7 @@ class H(BaseHTTPRequestHandler):
                 rec["model"] = str(j.get("model") or "")[:60] if isinstance(j, dict) else ""
                 rec["stream"] = bool(isinstance(j, dict) and j.get("stream"))
                 if mode == "on":
-                    SCR.scrub_request(j, counts)
+                    SCR.scrub_request(j, counts, forms)
                     out = json.dumps(j, ensure_ascii=False).encode("utf-8")
                     swapped = True
                 else:                                   # watch: count only, forward the original
@@ -182,12 +184,16 @@ class H(BaseHTTPRequestHandler):
                         self.send_header(k, v)
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
-                st = {}
+                st = {"_forms": forms}
                 tmpl = None
-                while True:
+                held = []                               # an Anthropic `event:` line waits for its `data:` line, so a
+                while True:                             # flushed delta can be sent as a whole event before it
                     line = r.readline()
                     if not line:
                         break
+                    if restore and line.startswith(b"event:") and not held:
+                        held.append(line)
+                        continue
                     if restore and line.startswith(b"data:"):
                         data = line[5:].strip()
                         if data == b"[DONE]":
@@ -197,14 +203,27 @@ class H(BaseHTTPRequestHandler):
                         elif data:
                             try:
                                 ev = json.loads(data)
-                                if tmpl is None and isinstance(ev, dict):
-                                    tmpl = {k: ev[k] for k in ("id", "object", "created", "model") if k in ev}
-                                S.restore_sse_event(SCR, ev, st)
+                                if S.is_anthropic_event(ev):
+                                    for pre in S.restore_anthropic_event(SCR, ev, st):
+                                        self._chunk(b"event: content_block_delta\ndata: "
+                                                    + json.dumps(pre, ensure_ascii=False).encode() + b"\n\n")
+                                else:
+                                    if tmpl is None and isinstance(ev, dict):
+                                        tmpl = {k: ev[k] for k in ("id", "object", "created", "model") if k in ev}
+                                    S.restore_sse_event(SCR, ev, st)
                                 line = b"data: " + json.dumps(ev, ensure_ascii=False).encode() + b"\n"
                             except ValueError:
                                 pass
+                    if held:
+                        self._chunk(b"".join(held))
+                        held = []
                     self._chunk(line)
+                if held:
+                    self._chunk(b"".join(held))
                 if restore:
+                    for pre in S.flush_anthropic(st):
+                        self._chunk(b"event: content_block_delta\ndata: " + json.dumps(pre, ensure_ascii=False).encode()
+                                    + b"\n\n")
                     fl = S.flush_all(SCR, st, tmpl)
                     if fl:
                         self._chunk(b"data: " + json.dumps(fl, ensure_ascii=False).encode() + b"\n\n")
@@ -214,9 +233,10 @@ class H(BaseHTTPRequestHandler):
                 data = r.read()
                 if restore and data and "json" in ctype:
                     try:
-                        data = json.dumps(SCR.restore_obj(json.loads(data), stats), ensure_ascii=False).encode("utf-8")
+                        data = json.dumps(SCR.restore_obj(json.loads(data), stats, forms=forms),
+                                          ensure_ascii=False).encode("utf-8")
                     except ValueError:
-                        data = SCR.restore_text(data.decode("utf-8", "replace"), stats=stats).encode("utf-8")
+                        data = SCR.restore_text(data.decode("utf-8", "replace"), stats=stats, forms=forms).encode("utf-8")
                 self.send_response(r.status)
                 for k, v in r.getheaders():
                     if k.lower() not in RHOP:

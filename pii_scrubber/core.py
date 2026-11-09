@@ -7,7 +7,9 @@ real value: counts and types only.
 
 Pieces
   Known values  a YAML/JSON file you write (known_file): {TYPE: [values]} or [[value, TYPE], ...]. Matched with
-                pyahocorasick, case-insensitive, whole words. PHONE entries are expanded to their common formats.
+                pyahocorasick, case-insensitive, whole words; a multi-word value also matches with its words joined by
+                any whitespace run (NBSP, tabs), zero-width characters, '.', '_', '-' or '%20', and every such
+                variant shares the value's one placeholder. PHONE entries are expanded to their common formats.
   Private terms an optional YAML file (private_terms_file): `terms:` phrases or regexes -> «PRIVATE_TERM_n»,
                 `figures:` money amounts expanded to every written format ($1.5B, 1,500M, USD 1.5 billion, ...)
                 -> «PRIVATE_FIGURE_n».
@@ -15,8 +17,9 @@ Pieces
                 patterns (vendored); API keys and tokens via the gitleaks default rules (vendored); a few local rules
                 where no library exists (street address, keyword-anchored account number / date of birth, order no.).
   Vault         value -> «TYPE_n», one stable map in state_dir/vault.json (0600, local only).
-  Restore       exact «TYPE_n», and bare TYPE_n when it is in the vault; streamed text holds back a possibly split
-                placeholder until the next chunk; tool-call arguments get JSON-escaped values.
+  Restore       exact «TYPE_n», and bare TYPE_n when it is in the vault; streamed text (OpenAI chat chunks and Anthropic
+                /v1/messages events) holds back a possibly split placeholder until the next chunk; tool-call arguments
+                get JSON-escaped values. A per-request Forms record puts back each variant exactly as it was written.
   Fail closed   any error while scrubbing raises ScrubError (the proxy answers 503 and nothing is forwarded); after the
                 swap the outgoing strings are re-checked for known values and the request is blocked if one is left.
   Paths         a known value that is one segment of a filesystem path (/home/<user>/..., ~/...) is left alone, so
@@ -125,15 +128,33 @@ PATTERNS = [   # (TYPE, regex, group). Only types no maintained library covers; 
     # gitleaks targets source code and misses tokens inside URL query strings (?..._token=<uuid>&...)
     ("SECRET", re.compile(r"(?i)[?&][\w.-]*(?:token|key|secret|sig|auth|code|passw)[\w.-]*="
                           r"((?=[^&#\s\"']*\d)(?=[^&#\s\"']*[A-Za-z])[A-Za-z0-9_\-.%~+/]{16,})"), 1),
+    # 0.1.1, generic: an email written with a bracketed at/dot ("ann [at] example [dot] org", "ann(at)example.org")
+    ("EMAIL", re.compile(r"(?i)(?<![\w.+\-])[A-Za-z0-9._%+\-]+\s*[\[({<]\s*at\s*[\])}>]\s*[A-Za-z0-9\-]+"
+                         r"(?:(?:\s*[\[({<]\s*dot\s*[\])}>]\s*|\.)[A-Za-z0-9\-]+)*"
+                         r"(?:\s*[\[({<]\s*dot\s*[\])}>]\s*|\.)[A-Za-z]{2,}(?![\w\-])"), 0),
+    # 0.1.1, generic: an email with a full-width/small @ or zero-width characters hidden in it
+    ("EMAIL", re.compile(r"(?<![\w.+\-])[\w.+\-\u200b\u200c\u200d\u2060]+[\u200b\u200c\u200d\u2060]*[@\uff20\ufe6b]"
+                         r"[\u200b\u200c\u200d\u2060]*[\w\-]+(?:[.\uff0e][\w\-\u200b\u200c\u200d\u2060]+)+"), 0),
+    # 0.1.1, generic: IPv6 (full or compressed), checked by the ipaddress module in _valid
+    ("IP", re.compile(r"(?<![\w:.])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w:])"), 0),
 ]
 # cheap substring gates: a pattern runs only when one of its literals is in the lowercased text
 GATES = {0: (".ts.net",), 2: ("born", "dob", "d.o.b", "birth"), 3: ("acc", "routing", "a/c"), 5: ("token", "key", "secret",
-         "sig", "auth", "code", "passw")}
+         "sig", "auth", "code", "passw"), 6: ("at]", "at)", "at}", "at>", "at ]", "at )", "at }", "at >"),
+         7: ("\uff20", "\ufe6b", "\u200b", "\u200c", "\u200d", "\u2060"), 8: ("::", ":0", ":1", ":2", ":3", ":4", ":5", ":6",
+         ":7", ":8", ":9", ":a", ":b", ":c", ":d", ":e", ":f")}
 SKIP_IP = re.compile(r"^(?:127\.|0\.0\.0\.0|255\.|1\.1\.1\.1$|8\.8\.[48]\.[48]$)")
 
 
 def _valid(t, v):        # local policy on top of the library checks
     if t == "IP":
+        if ":" in v and "." not in v:                 # IPv6: a real address, 3+ groups, not loopback/unspecified
+            import ipaddress
+            try:
+                a = ipaddress.IPv6Address(v.split("%")[0])
+            except ValueError:
+                return False
+            return not (a.is_loopback or a.is_unspecified) and sum(1 for g in v.split(":") if g) >= 3
         if SKIP_IP.match(v) or ":" in v and v.startswith("::"):
             return False
         p = v.split("/")[0].split(".")
@@ -157,6 +178,44 @@ def detectors(extra=None):
 # ---------------------------------------------------------------- known values
 def _norm_key(v):
     return re.sub(r"\s+", " ", v.strip().lower())
+
+
+# Between the words of a known multi-word value: any run of Unicode whitespace (NBSP, tabs, several spaces), zero-width
+# characters, '.', '_', '-' or a URL-encoded space. "Jane Doe", "Jane\u00a0Doe", "Jane.Doe", "JANE_DOE" and "Jane%20Doe"
+# are the same value: one placeholder, and the egress re-check uses the same rule.
+SEP_RX = r"(?:[\s\u200b\u200c\u200d\u2060\ufeff._\-]|%20)+"
+_SEP_RE = re.compile(SEP_RX)
+
+
+def _canon(v):
+    """the key a value is stored under when its written variants share one placeholder."""
+    return _SEP_RE.sub(" ", v.strip().lower()).strip()
+
+
+def _variant_rx(key):
+    """regex for a known multi-word value in any separator/case variant, with the matcher's whole-word edges."""
+    words = key.split(" ")
+    return re.compile(r"(?<![\w@.])" + SEP_RX.join(re.escape(w) for w in words) + r"(?![\w@])", re.I)
+
+
+class Forms:
+    """per-request record of the surface form behind each placeholder, in order of occurrence. Variants of one value
+    share a placeholder; restore with the same Forms puts back the form that was written (occurrence by occurrence,
+    then the last one seen), so a round trip stays byte-exact."""
+
+    def __init__(self):
+        self.seen, self.next = {}, {}
+
+    def add(self, ph, v):
+        self.seen.setdefault(ph, []).append(v)
+
+    def take(self, ph):
+        lst = self.seen.get(ph)
+        if not lst:
+            return None
+        i = self.next.get(ph, 0)
+        self.next[ph] = i + 1
+        return lst[i] if i < len(lst) else lst[-1]
 
 
 def _phone_variants(p):
@@ -278,7 +337,7 @@ def build_private_terms(path):
             if isinstance(x, dict) and "regex" in x:
                 body = str(x["regex"])
             else:
-                body = r"\s+".join(re.escape(w) for w in str(x.get("value") if isinstance(x, dict) else x).split())
+                body = SEP_RX.join(re.escape(w) for w in str(x.get("value") if isinstance(x, dict) else x).split())
             rx = r"(?i:(?<![\w-])(?:" + body + r")(?![\w-]))"
             re.compile(rx)
         except Exception:  # noqa: BLE001
@@ -374,11 +433,17 @@ class Scrubber:
                 _write_private(self.vault_path, {"fwd": self.fwd, "rev": self.rev, "ctr": self.ctr})
                 self.dirty = False
 
-    def placeholder(self, value, t):
-        k = t + "|" + _norm_key(value) if t not in ("PHONE",) else "PHONE|" + re.sub(r"\D", "", value)[-10:]
+    def placeholder(self, value, t, key=None, canon=None):
+        """value -> stable «TYPE_n». key: a known value or private term (its canonical key); every written variant of it
+        shares one placeholder, the vault keeps `canon` (the known-file spelling) and a Forms object keeps the surface
+        forms for exact restore. Without key (pattern hits) each written form keeps its own stand-in."""
+        if key is not None:
+            k = t + "|" + key
+        else:
+            k = t + "|" + _norm_key(value) if t not in ("PHONE",) else "PHONE|" + re.sub(r"\D", "", value)[-10:]
         with self.lock:
             ph = self.fwd.get(k)
-            if ph is not None and self.rev.get(ph) != value:     # phones too: each written form keeps its own stand-in
+            if ph is not None and key is None and self.rev.get(ph) != value:  # phones too: each written form keeps its own
                 k += "\x00" + value               # a case/spacing variant gets its own stand-in: restore is exact
                 ph = self.fwd.get(k)
             if ph is None:
@@ -386,7 +451,7 @@ class Scrubber:
                 self.ctr[t] = n
                 ph = f"{L}{t}_{n}{R}"
                 self.fwd[k] = ph
-                self.rev[ph] = value
+                self.rev[ph] = canon if canon is not None else value
                 self.dirty = True
             return ph
 
@@ -396,6 +461,7 @@ class Scrubber:
         for v, t in known:
             self.known[_norm_key(v)] = (v, t)
         self.known_m = detectors()[0].KnownMatcher(list(self.known))
+        self.known_var = [(k, _variant_rx(k), k.split(" ")[0], k.split(" ")[-1]) for k in self.known if " " in k]
         self.cache = {}
         self.verified = set()
 
@@ -454,15 +520,15 @@ class Scrubber:
         low = self.det.lower_same_len(text)
         for s, e, k in self._known_hits(text, low):
             v, t = self.known.get(k, (text[s:e], "PERSON"))
-            sp.append((s, e, t, 0, text[s:e]))       # the surface form, so restore keeps its case
+            sp.append((s, e, t, 0, text[s:e], (k, v)))   # one placeholder per known value; the surface form rides Forms
         for s, e, t, v in self._private_hits(text, low):
-            sp.append((s, e, t, 0, v))
+            sp.append((s, e, t, 0, v, (_canon(v), None)))
         found = self.presidio.find(text, low) + self.gitleaks.find(text, low)
         if any(c.isdigit() for c in text):
             found += self.det.find_phones(text, self.regions)
         for s, e, t, v in found:
             if self.on.get(t, True) and e > s and _valid(t, v):
-                sp.append((s, e, t, 1, v))
+                sp.append((s, e, t, 1, v, None))
         for t, p, g, gate in self.patterns:
             if gate and not any(x in low for x in gate):
                 continue
@@ -471,19 +537,20 @@ class Scrubber:
                 v = text[s:e]
                 if e <= s or not _valid(t, v):
                     continue
-                sp.append((s, e, t, 1, v))
+                sp.append((s, e, t, 1, v, None))
         sp.sort(key=lambda x: (x[0], x[3], -(x[1] - x[0])))
         res, last = [], -1
-        for s, e, t, pr, v in sp:
+        for s, e, t, pr, v, key in sp:
             if s >= last:
-                res.append((s, e, t, v))
+                res.append((s, e, t, v, key))
                 last = e
             elif res and e > res[-1][1] and s == res[-1][0]:
-                res[-1] = (s, e, t, v)
+                res[-1] = (s, e, t, v, key)
                 last = e
         return res
 
-    def scrub_text(self, text, counts=None):
+    def scrub_text(self, text, counts=None, forms=None):
+        """forms: a Forms object that records the surface form behind each placeholder (for exact restore)."""
         if not text or len(text) < 3:
             return text
         h = hashlib.blake2b(text.encode("utf-8", "surrogatepass"), digest_size=16).digest()
@@ -492,11 +559,19 @@ class Scrubber:
             if counts is not None:
                 for t, n in c[1].items():
                     counts[t] = counts.get(t, 0) + n
+            if forms is not None:
+                for ph, v in c[2]:
+                    forms.add(ph, v)
             return c[0]
-        out, pos, local = [], 0, {}
-        for s, e, t, v in self.spans(text):
+        out, pos, local, phs = [], 0, {}, []
+        for s, e, t, v, key in self.spans(text):
             out.append(text[pos:s])
-            out.append(self.placeholder(text[s:e], t))   # vault keeps the exact surface form: restore is byte for byte (fix2)
+            sv = text[s:e]
+            ph = self.placeholder(sv, t, *(key or ()))   # pattern hits: the vault keeps the surface form (fix2)
+            out.append(ph)
+            phs.append((ph, sv))
+            if forms is not None:
+                forms.add(ph, sv)
             local[t] = local.get(t, 0) + 1
             pos = e
         out.append(text[pos:])
@@ -504,7 +579,7 @@ class Scrubber:
         if len(self.cache) > int(self.cfg.get("cache_items", 4000)):
             self.cache.clear()
             self.verified.clear()
-        self.cache[h] = (r, local)
+        self.cache[h] = (r, local, tuple(phs))
         if counts is not None:
             for t, n in local.items():
                 counts[t] = counts.get(t, 0) + n
@@ -519,6 +594,18 @@ class Scrubber:
     def _known_hits(self, text, low=None):
         """known-value hits, minus those that are a segment of a filesystem path (/home/<user>/..., ~/...)."""
         hits = self.known_m.find(text, low)
+        if self.known_var:
+            low = low if low is not None else self.det.lower_same_len(text)
+            more = [(m.start(), m.end(), k) for k, rx, w0, w1 in self.known_var if w0 in low and w1 in low
+                    for m in rx.finditer(text)]
+            if more:
+                hits = sorted(hits + more, key=lambda h: (h[0], h[0] - h[1]))
+                out, last = [], -1
+                for h in hits:
+                    if h[0] >= last:
+                        out.append(h)
+                        last = h[1]
+                hits = out
         if hits and "/" in text:
             hits = [h for h in hits if not in_fs_path(text, h[0], h[1])]
         return hits
@@ -533,8 +620,8 @@ class Scrubber:
     SKIP_KEYS = {"model", "role", "type", "tool_call_id", "id", "tool_choice", "response_format", "stop", "format",
                  "reasoning_effort", "service_tier", "user"}
 
-    def scrub_request(self, body, counts=None):
-        """mutates and returns body; raises ScrubError on anything unexpected (fail closed)."""
+    def scrub_request(self, body, counts=None, forms=None):
+        """mutates and returns body; raises ScrubError on anything unexpected (fail closed). forms: see Forms."""
         counts = {} if counts is None else counts
         left = [0]
 
@@ -554,7 +641,7 @@ class Scrubber:
             if isinstance(o, list):
                 return [walk(x, key, parent) for x in o]
             if isinstance(o, str):
-                s = self.scrub_text(o, counts)
+                s = self.scrub_text(o, counts, forms)
                 h = hashlib.blake2b(s.encode("utf-8", "surrogatepass"), digest_size=16).digest()
                 if h not in self.verified:
                     n = self.leftover_known(s)
@@ -587,18 +674,22 @@ class Scrubber:
         return body
 
     # restore -------------------------------------------------------
-    def _val(self, ph, js):
-        v = self.rev.get(ph)
+    def _val(self, ph, js, forms=None):
+        v = forms.take(ph) if forms is not None else None
+        if v is None:
+            v = self.rev.get(ph)
         if v is None:
             return None
         return json.dumps(v, ensure_ascii=False)[1:-1] if js else v
 
-    def restore_text(self, text, js=False, stats=None):
+    def restore_text(self, text, js=False, stats=None, forms=None):
+        """placeholders -> values. With the request's Forms, each variant comes back exactly as it was written;
+        without, the vault's spelling (for a known value, as written in the known file)."""
         if not text or ("_" not in text):
             return text
 
         def rep(m):
-            v = self._val(m.group(0), js)
+            v = self._val(m.group(0), js, forms)
             if v is None:
                 if stats is not None:
                     stats["unknown"] = stats.get("unknown", 0) + 1
@@ -608,11 +699,18 @@ class Scrubber:
             return v
         text = PH_RE.sub(rep, text)
         if js and "\\u00" in text:
-            text = JS_PH_RE.sub(lambda m: self._val(f"{L}{m.group(1)}_{m.group(2)}{R}", True) or m.group(0), text)
+            def rep_js(m):
+                v = self._val(f"{L}{m.group(1)}_{m.group(2)}{R}", True, forms)
+                if v is None:
+                    return m.group(0)
+                if stats is not None:
+                    stats["restored"] = stats.get("restored", 0) + 1
+                return v
+            text = JS_PH_RE.sub(rep_js, text)
         if self.cfg.get("restore_bare", True):
             def rep2(m):
                 ph = f"{L}{m.group(1)}_{m.group(2)}{R}"
-                v = self._val(ph, js)
+                v = self._val(ph, js, forms)
                 if v is None:
                     return m.group(0)
                 if stats is not None:
@@ -621,17 +719,17 @@ class Scrubber:
             text = BARE_RE.sub(rep2, text)
         return text
 
-    def restore_obj(self, o, stats=None, key=None):
+    def restore_obj(self, o, stats=None, key=None, forms=None):
         if isinstance(o, dict):
-            return {k: self.restore_obj(v, stats, k) for k, v in o.items()}
+            return {k: self.restore_obj(v, stats, k, forms) for k, v in o.items()}
         if isinstance(o, list):
-            return [self.restore_obj(x, stats, key) for x in o]
+            return [self.restore_obj(x, stats, key, forms) for x in o]
         if isinstance(o, str):
-            return self.restore_text(o, js=(key == "arguments"), stats=stats)
+            return self.restore_text(o, js=(key == "arguments"), stats=stats, forms=forms)
         return o
 
-    def stream_restorer(self, js=False, stats=None):
-        return StreamRestorer(self, js, stats)
+    def stream_restorer(self, js=False, stats=None, forms=None):
+        return StreamRestorer(self, js, stats, forms)
 
 
 _BARE_TAIL = re.compile(r"(?<![A-Za-z0-9_])([A-Z][A-Z_]*\d*)$")
@@ -642,10 +740,22 @@ _BARE_FULL = re.compile(r"(?:" + "|".join(TYPES) + r")_\d+")
 class StreamRestorer:
     """feed(chunk) -> text safe to emit now; a tail that may be a split placeholder waits for the next chunk."""
 
-    def __init__(self, scr, js=False, stats=None):
-        self.s, self.js, self.stats, self.buf = scr, js, stats, ""
+    def __init__(self, scr, js=False, stats=None, forms=None):
+        self.s, self.js, self.stats, self.buf, self.forms = scr, js, stats, "", forms
 
     def _cut(self, b):
+        if self.js:                                 # JSON text may carry the placeholder escaped: \u00abPERSON_1\u00bb
+            low = b[-48:].lower()
+            off = len(b) - len(low)
+            i = low.rfind("\\u00ab")
+            if i != -1 and "\\u00bb" not in low[i:]:
+                return min(off + i, self._cut_plain(b))
+            for k in range(5, 0, -1):               # a tail that may be the start of an escape: \ \u \u0 \u00 \u00a
+                if low.endswith("\\u00ab"[:k]):
+                    return min(len(b) - k, self._cut_plain(b))
+        return self._cut_plain(b)
+
+    def _cut_plain(self, b):
         i = b.rfind(L)
         if i != -1 and R not in b[i:] and len(b) - i <= 24:
             return i
@@ -663,11 +773,11 @@ class StreamRestorer:
         b = self.buf + chunk
         cut = self._cut(b)
         self.buf = b[cut:]
-        return self.s.restore_text(b[:cut], self.js, self.stats)
+        return self.s.restore_text(b[:cut], self.js, self.stats, self.forms)
 
     def flush(self):
         b, self.buf = self.buf, ""
-        return self.s.restore_text(b, self.js, self.stats)
+        return self.s.restore_text(b, self.js, self.stats, self.forms)
 
 
 def restore_sse_event(scr, ev, state):
@@ -677,12 +787,13 @@ def restore_sse_event(scr, ev, state):
         d = ch.get("delta") or {}
         for f in ("content", "reasoning_content", "reasoning"):
             if isinstance(d.get(f), str):
-                r = state.setdefault((i, f), scr.stream_restorer(False, state.setdefault("_stats", {})))
+                r = state.setdefault((i, f), scr.stream_restorer(False, state.setdefault("_stats", {}), state.get("_forms")))
                 d[f] = r.feed(d[f])
         for tc in d.get("tool_calls") or []:
             fn = tc.get("function") or {}
             if isinstance(fn.get("arguments"), str):
-                r = state.setdefault((i, "tc", tc.get("index", 0)), scr.stream_restorer(True, state.setdefault("_stats", {})))
+                r = state.setdefault((i, "tc", tc.get("index", 0)),
+                                     scr.stream_restorer(True, state.setdefault("_stats", {}), state.get("_forms")))
                 fn["arguments"] = r.feed(fn["arguments"])
         if ch.get("finish_reason"):
             _flush_choice(scr, ch, i, state)
@@ -707,6 +818,63 @@ def _flush_choice(scr, ch, i, state):
             fn["arguments"] = (fn.get("arguments") or "") + rest
         else:
             d[k[1]] = (d.get(k[1]) or "") + rest
+
+
+ANTHROPIC_EVENTS = frozenset(("message_start", "content_block_start", "content_block_delta", "content_block_stop",
+                              "message_delta", "message_stop", "ping", "error"))
+_ANTH_FIELDS = {"text_delta": ("text", False), "input_json_delta": ("partial_json", True)}
+
+
+def is_anthropic_event(ev):
+    return isinstance(ev, dict) and ev.get("type") in ANTHROPIC_EVENTS and "choices" not in ev
+
+
+def restore_anthropic_event(scr, ev, state):
+    """Anthropic /v1/messages stream event (parsed `data:` JSON); state = per-stream dict. Mutates ev and returns a
+    list of extra content_block_delta events to send BEFORE it: a placeholder split across deltas is held back until it
+    is whole, and what is held is flushed just before the block's content_block_stop (or message_stop). text_delta is
+    restored as text, input_json_delta (tool_use input) as JSON text. thinking deltas are left as sent (signed)."""
+    rs = state.setdefault("_anth", {})
+    stats = state.setdefault("_stats", {})
+    forms = state.get("_forms")
+    t = ev.get("type")
+    if t == "content_block_start" and isinstance(ev.get("content_block"), dict):
+        cb = ev["content_block"]
+        if cb.get("type") in ("text", "tool_use"):
+            ev["content_block"] = scr.restore_obj(cb, stats, forms=forms)
+        return []
+    if t == "content_block_delta":
+        d = ev.get("delta") or {}
+        f = _ANTH_FIELDS.get(d.get("type"))
+        if f and isinstance(d.get(f[0]), str):
+            i = ev.get("index", 0)
+            r = rs.get(i)
+            if r is None:
+                r = rs[i] = (d["type"], scr.stream_restorer(f[1], stats, forms))
+            d[f[0]] = r[1].feed(d[f[0]])
+        return []
+    if t == "content_block_stop":
+        return _anth_flush(rs, [ev.get("index", 0)])
+    if t == "message_stop":
+        return _anth_flush(rs, sorted(rs))
+    return []
+
+
+def _anth_flush(rs, idx):
+    out = []
+    for i in idx:
+        r = rs.pop(i, None)
+        if r is None:
+            continue
+        rest = r[1].flush()
+        if rest:
+            out.append({"type": "content_block_delta", "index": i, "delta": {"type": r[0], _ANTH_FIELDS[r[0]][0]: rest}})
+    return out
+
+
+def flush_anthropic(state):
+    """leftovers at EOF of an Anthropic stream -> extra content_block_delta events (normally empty)."""
+    return _anth_flush(state.get("_anth") or {}, sorted(state.get("_anth") or {}))
 
 
 def flush_all(scr, state, template=None):

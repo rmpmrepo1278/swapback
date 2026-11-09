@@ -795,7 +795,7 @@
     {
       "id": "i03",
       "kind": "positive",
-      "text": "Invented social security number 219-08-6741. No actual identity is represented.",
+      "text": "Invented social security number 987-65-4329. No actual identity is represented.",
       "expected_spans": [
         {
           "start": 32,
