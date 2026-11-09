@@ -95,7 +95,7 @@ def test_request_scrub_messages_tools_and_skip_keys(sc):
 def test_fail_closed_on_error(sc, monkeypatch):
     def boom(t):
         raise RuntimeError("x")
-    monkeypatch.setattr(sc, "spans", boom)
+    monkeypatch.setattr(sc, "spans_keyed", boom)
     with pytest.raises(s.ScrubError):
         sc.scrub_request({"messages": [{"role": "user", "content": "Jane Q Doe"}]})
 
@@ -478,7 +478,7 @@ def test_private_tool_args_and_sse(scp):
 
 
 def test_private_egress_check_blocks(scp, monkeypatch):
-    monkeypatch.setattr(scp, "spans", lambda text: [])
+    monkeypatch.setattr(scp, "spans_keyed", lambda text: [])   # the swap finds nothing
     with pytest.raises(s.ScrubError):
         scp.scrub_request({"messages": [{"role": "user", "content": "budget $2.47B"}]})
 

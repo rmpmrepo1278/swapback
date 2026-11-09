@@ -516,6 +516,11 @@ class Scrubber:
 
     # spans ---------------------------------------------------------
     def spans(self, text):
+        """[(start, end, TYPE, value)] for everything that would be swapped (public, unchanged shape)."""
+        return [x[:4] for x in self.spans_keyed(text)]
+
+    def spans_keyed(self, text):
+        """spans() plus each hit's placeholder key: (known/private-term key, canonical spelling), or None."""
         sp = []
         low = self.det.lower_same_len(text)
         for s, e, k in self._known_hits(text, low):
@@ -564,7 +569,7 @@ class Scrubber:
                     forms.add(ph, v)
             return c[0]
         out, pos, local, phs = [], 0, {}, []
-        for s, e, t, v, key in self.spans(text):
+        for s, e, t, v, key in self.spans_keyed(text):
             out.append(text[pos:s])
             sv = text[s:e]
             ph = self.placeholder(sv, t, *(key or ()))   # pattern hits: the vault keeps the surface form (fix2)
