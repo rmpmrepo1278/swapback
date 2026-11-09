@@ -95,6 +95,9 @@ def load_cfg(path=None):
     if c["mode"] not in ("off", "watch", "on"):
         raise ValueError("mode must be on, watch or off")
     ToolPolicy(c.get("tool_restore", True))             # a bad tool_restore section fails here, at load
+    from . import hooks as _hooks
+    _hooks.spec(c)                                      # a malformed hooks section fails here too (the module loads at start)
+    c["_config_dir"] = base
     return c
 
 
@@ -1406,6 +1409,10 @@ def main(argv=None):
             out["known_by_type"] = by
         if cfg.get("private_terms_file"):
             out["private"] = build_private_terms(cfg["private_terms_file"])[1]
+        if cfg.get("hooks"):
+            from . import hooks as _hooks
+            h = _hooks.Hooks(cfg)                       # imports the module; setup() runs only in the proxy
+            out["hooks"] = {"module": h.name, "functions": sorted(h.fns)}
         print(json.dumps(out))
     elif cmd == "scrub-file":
         s = Scrubber(cfg)

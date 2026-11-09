@@ -28,3 +28,9 @@ tool_restore:
   # * matches the rest of a word. Built-in list:
   # [fetch*, http*, curl, wget, web*, brows*, request*, url*, navigat*, download*, upload*, exec*, "*shell", bash, sh,
   #  zsh, cmd, terminal, run, ssh, scp, rsync, git_push, push, email*, mail, send, post, message, webhook*, notify, publish]
+
+# Optional: your own Python around each request (spend cap, local fallback, usage, extra health endpoints).
+# Hooks only see placeholders, never real values. See the README's "Hooks" section.
+# hooks:
+#   module: spend_cap.py        # a .py file (relative to this file) or an importable module name
+#   options: {daily_usd: 5}

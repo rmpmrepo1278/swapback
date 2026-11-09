@@ -2,18 +2,21 @@
 (swapback.core) before they leave and responses (plain JSON or SSE streams) are restored on the way back. Paths,
 headers and models pass through unchanged. Fail closed: a scrub error answers 503 and nothing is forwarded. Logs
 counts and types only. OpenAI chat-completion chunks, Responses API events and Anthropic /v1/messages events are all restored in streams.
-GET /scrubber/health -> {"ok": ...}. Request header X-Scrubber-Raw: 1 returns the provider's
+GET /scrubber/health -> {"ok": ...}. Optional hooks (swapback.hooks, the `hooks:` config section) can reroute,
+answer, account for usage and add GET endpoints; they only ever see scrubbed requests. Request header X-Scrubber-Raw: 1 returns the provider's
 answer without the swap-back (used by `swapback canary` to prove what the provider saw)."""
 import copy, http.client, json, os, socket, sys, threading, time, urllib.parse
 _NOJSON = object()
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import core as S
+from . import hooks as HK
 
 CFG = None
 SCR = None
 UP = None
 LOG = None
+HOOKS = HK.Hooks()
 HOP = {"host", "content-length", "accept-encoding", "connection", "keep-alive", "transfer-encoding", "proxy-connection",
        "te", "upgrade", "x-scrubber-raw"}
 RHOP = {"content-length", "transfer-encoding", "connection", "keep-alive", "content-encoding"}
@@ -54,6 +57,9 @@ def _log(rec):
 
 
 def _alert_async(text):
+    if HOOKS.has("alert"):                               # the hooks module delivers alerts itself
+        threading.Thread(target=HOOKS.soft, args=("alert", "swapback: " + text[:300]), daemon=True).start()
+        return
     threading.Thread(target=S.alert, args=(CFG, text), daemon=True).start()
 
 
@@ -74,12 +80,22 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
+        fn = HOOKS.route(self.path) if HOOKS.routes and not self.path.startswith("/scrubber/health") else None
+        if fn is not None:                               # an extra GET endpoint from the hooks module
+            try:
+                res = fn()
+                code, obj = res if isinstance(res, tuple) else (200, res)
+            except Exception as e:
+                HOOKS.errors += 1
+                code, obj = 500, {"ok": False, "error": "hook route failed: " + type(e).__name__}
+            return self._send_json(int(code), obj)
         if self.path.startswith("/scrubber/health"):
             _cfg_refresh()
             return self._send_json(200, {"ok": True, "mode": CFG["mode"], "known": len(SCR.known), "vault": len(SCR.rev),
                                          "requests": STATE["requests"], "blocked": STATE["blocked"],
                                          "errors": STATE["errors"], "last_error": STATE["last_error"],
-                                         "uptime_s": int(time.time() - STATE["started"])})
+                                         "uptime_s": int(time.time() - STATE["started"]),
+                                         "hooks": HOOKS.name, "hook_errors": HOOKS.errors})
         self._proxy(None)
 
     def do_POST(self):
@@ -130,8 +146,7 @@ class H(BaseHTTPRequestHandler):
                         raise S.ScrubError("request body is not JSON (%s)" % (ctype.split(";")[0] or "no content type")) from None
                 rec["model"] = str(j.get("model") or "")[:60] if isinstance(j, dict) else ""
                 rec["stream"] = bool(isinstance(j, dict) and j.get("stream"))
-                api = "anthropic" if rec["path"].endswith("/messages") else \
-                    "responses" if rec["path"].endswith("/responses") else "chat"
+                api = _api(rec["path"])
                 if mode == "on":
                     SCR.scrub_request(j, counts, forms, api=api)
                     out = json.dumps(j, ensure_ascii=False).encode("utf-8")
@@ -155,31 +170,69 @@ class H(BaseHTTPRequestHandler):
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
         headers["Accept-Encoding"] = "identity"
         headers["Host"] = UP.netloc
+        restore = swapped and not raw
+        ctx = {"log": {}, "path": rec["path"], "mode": mode}
+        route = None
+        if HOOKS.has("before_forward"):
+            try:
+                hb = j if j is not _NOJSON else None
+                if hb is None and out:
+                    try:
+                        hb = json.loads(out)
+                    except ValueError:
+                        hb = None
+                req = HK.Request(self.command, self.path, headers, hb, _api(rec["path"]), mode)
+                ctx["request"] = req
+                route = HK.check_action(HOOKS.call("before_forward", req, ctx), "before_forward")
+            except Exception as e:                      # FAIL CLOSED, like a scrub error
+                return self._hook_fail(rec, "before_forward", e)
+            if route and "respond" in route:
+                return self._respond(route["respond"], rec, ctx, restore, forms, t0)
         c = r = None
+        pre = None                                      # an error body already read for on_upstream_response
+        err = None
         try:
-            conn = http.client.HTTPSConnection if UP.scheme == "https" else http.client.HTTPConnection
-            c = conn(UP.hostname, UP.port or (443 if UP.scheme == "https" else 80),
-                     timeout=float(CFG.get("upstream_timeout_s") or 900))
-            c.connect()
-            c.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            if out is not None:
-                headers["Content-Length"] = str(len(out))
-            c.request(self.command, UP.path.rstrip("/") + self.path, body=out, headers=headers)
-            r = c.getresponse()
+            c, r = self._send(self._target(route, out, headers))
         except Exception as e:
+            err = e
             STATE["errors"] += 1
             STATE["last_error"] = "upstream: " + type(e).__name__
-            rec.update(status=502, error="upstream " + type(e).__name__)
+        if HOOKS.has("on_upstream_response") and (r is None or r.status >= 400):
+            if r is not None:
+                pre = r.read()
+            resp = HK.Response(r.status if r is not None else None, pre or b"", r.getheaders() if r is not None else {},
+                               "" if r is not None else type(err).__name__)
+            try:
+                alt = HK.check_action(HOOKS.call("on_upstream_response", resp, ctx), "on_upstream_response")
+            except Exception as e:
+                if c is not None:
+                    c.close()
+                return self._hook_fail(rec, "on_upstream_response", e)
+            if alt:
+                try:
+                    c2, r2 = self._send(self._target(alt, out, headers))
+                    if c is not None:
+                        c.close()
+                    c, r, pre = c2, r2, None
+                    rec["rerouted"] = ctx["rerouted"] = True
+                except Exception as e2:
+                    rec["reroute_error"] = type(e2).__name__
+        if r is None:
+            rec.update(status=502, error="upstream " + type(err).__name__)
+            if ctx["log"]:
+                rec["hook"] = ctx["log"]
             _log(rec)
             if c is not None:
                 c.close()
+            HOOKS.soft("on_complete", {"status": 502, "headers": {}, "rerouted": bool(ctx.get("rerouted")),
+                                       "error": "upstream " + type(err).__name__}, ctx)
             return self._send_json(502, {"error": {"message": "swapback: upstream unreachable",
                                                    "type": "upstream_error"}})
         ctype = r.getheader("Content-Type") or ""
-        restore = swapped and not raw
         stats = {}
+        usage = HOOKS.has("on_usage")
         try:
-            if "text/event-stream" in ctype:
+            if "text/event-stream" in ctype and pre is None:
                 self.send_response(r.status)
                 for k, v in r.getheaders():
                     if k.lower() not in RHOP:
@@ -196,6 +249,11 @@ class H(BaseHTTPRequestHandler):
                     if restore and line.startswith(b"event:") and not held:
                         held.append(line)
                         continue
+                    if usage and line.startswith(b"data:"):
+                        try:                            # a separate parse: the hook never holds a restored object
+                            HOOKS.soft("on_usage", json.loads(line[5:].strip() or b"null"), ctx)
+                        except ValueError:
+                            pass
                     if restore and line.startswith(b"data:"):
                         data = line[5:].strip()
                         if data == b"[DONE]":
@@ -232,7 +290,12 @@ class H(BaseHTTPRequestHandler):
                     stats = st.get("_stats") or {}
                 self._chunk(b"")
             else:
-                data = r.read()
+                data = pre if pre is not None else r.read()
+                if usage and data and "json" in ctype:
+                    try:
+                        HOOKS.soft("on_usage", json.loads(data), ctx)
+                    except ValueError:
+                        pass
                 if restore and data and "json" in ctype:
                     try:
                         data = json.dumps(SCR.restore_obj(json.loads(data), stats, forms=forms),
@@ -256,8 +319,77 @@ class H(BaseHTTPRequestHandler):
         finally:
             if c is not None:
                 c.close()
+        HOOKS.soft("on_complete", {"status": r.status, "headers": {k.lower(): v for k, v in r.getheaders()},
+                                   "rerouted": bool(ctx.get("rerouted")), "client_gone": bool(rec.get("client_gone"))},
+                   ctx)
+        if ctx["log"]:
+            rec["hook"] = ctx["log"]
         rec.update(status=r.status, restored=stats.get("restored", 0), unknown=stats.get("unknown", 0),
                    tool_kept=stats.get("tool_kept", 0),
+                   total_ms=round((time.perf_counter() - t0) * 1000, 1))
+        _log(rec)
+
+    def _target(self, route, out, headers):
+        """(url, path, body, headers, method, timeout) for the configured upstream, or for a hook's route."""
+        route = route or {}
+        if route.get("url"):
+            u = urllib.parse.urlparse(str(route["url"]))
+            path = (u.path or "/") + ("?" + u.query if u.query else "")
+        else:
+            u, path = UP, UP.path.rstrip("/") + self.path
+        body = out
+        if "body" in route:
+            b = route["body"]
+            body = b if b is None or isinstance(b, (bytes, bytearray)) else json.dumps(b, ensure_ascii=False).encode("utf-8")
+        hdrs = dict(route["headers"]) if route.get("headers") is not None else dict(headers)
+        hdrs["Host"] = u.netloc
+        hdrs["Accept-Encoding"] = "identity"
+        timeout = float(route.get("timeout_s") or CFG.get("upstream_timeout_s") or 900)
+        return u, path, body, hdrs, str(route.get("method") or self.command), timeout
+
+    def _send(self, target):
+        u, path, body, hdrs, method, timeout = target
+        conn = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+        c = conn(u.hostname, u.port or (443 if u.scheme == "https" else 80), timeout=timeout)
+        try:
+            c.connect()
+            c.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            if body is not None:
+                hdrs["Content-Length"] = str(len(body))
+            c.request(method, path, body=body, headers=hdrs)
+            return c, c.getresponse()
+        except Exception:
+            c.close()
+            raise
+
+    def _hook_fail(self, rec, where, e):
+        msg = "%s hook failed: %s" % (where, str(e)[:80] if isinstance(e, HK.HookError) else type(e).__name__)
+        STATE["blocked"] += 1
+        STATE["last_error"] = msg[:120]
+        rec.update(status=503, blocked=True, error=msg[:120])
+        _log(rec)
+        _alert_async("blocked a model request (fail-closed): " + msg[:120])
+        return self._send_json(503, {"error": {"message": "swapback blocked this request (fail-closed): " + msg[:120],
+                                               "type": "hook_error", "code": 503}})
+
+    def _respond(self, rsp, rec, ctx, restore, forms, t0):
+        """before_forward answered the client itself; its JSON is restored like an upstream reply."""
+        obj, stats = rsp.get("json"), {}
+        if restore and obj is not None:
+            obj = SCR.restore_obj(obj, stats, forms=forms)
+        b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(rsp["status"])
+        for k, v in (rsp.get("headers") or {}).items():
+            if k.lower() not in RHOP and k.lower() != "content-type":
+                self.send_header(k, v)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+        HOOKS.soft("on_complete", {"status": rsp["status"], "headers": {}, "rerouted": False, "responded": True}, ctx)
+        if ctx["log"]:
+            rec["hook"] = ctx["log"]
+        rec.update(status=rsp["status"], hook_response=True, restored=stats.get("restored", 0),
                    total_ms=round((time.perf_counter() - t0) * 1000, 1))
         _log(rec)
 
@@ -271,11 +403,18 @@ class H(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-def make_server(cfg=None):
-    """build (not start) the proxy server from cfg; returns the ThreadingHTTPServer."""
-    global CFG, SCR, UP, LOG
+def _api(path):
+    return "anthropic" if path.endswith("/messages") else "responses" if path.endswith("/responses") else "chat"
+
+
+def make_server(cfg=None, hooks=None):
+    """build (not start) the proxy server from cfg; returns the ThreadingHTTPServer. hooks: a loaded hooks.Hooks to use
+    instead of the cfg `hooks` section (tests and embedders)."""
+    global CFG, SCR, UP, LOG, HOOKS
     CFG = cfg or S.load_cfg()
     SCR = S.Scrubber(CFG)
+    HOOKS = hooks if hooks is not None else HK.Hooks(CFG)
+    HOOKS.setup(CFG)
     UP = urllib.parse.urlparse(CFG.get("upstream") or S.DEFAULTS["upstream"])
     if UP.scheme not in ("http", "https") or not UP.hostname:
         raise SystemExit("upstream must be an http(s) URL")
@@ -315,7 +454,8 @@ def main(argv=None):
     srv = make_server()
     h, p = srv.server_address[:2]
     print(json.dumps({"listening": "%s:%s" % (h, p), "mode": CFG["mode"], "known": len(SCR.known),
-                      "private_rules": len(SCR.private), "upstream": "%s://%s" % (UP.scheme, UP.netloc)}), flush=True)
+                      "private_rules": len(SCR.private), "upstream": "%s://%s" % (UP.scheme, UP.netloc),
+                      "hooks": HOOKS.name or None}), flush=True)
     srv.serve_forever()
 
 

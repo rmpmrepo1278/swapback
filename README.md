@@ -249,6 +249,45 @@ tool_restore:
 
 `tool_restore: false` restores every tool call, as 0.2 did.
 
+## Framework recipes
+
+`tool_restore` is plain config; nothing in swapback knows any framework. These are starting points for common agents.
+Tool names were checked against each project's own docs on 2026-11-09 unless marked unverified. "Kept by default"
+means the built-in egress list already matches the name (`swapback check-config` shows the policy you end up with).
+
+**Generic, strict.** Placeholders everywhere except the one or two tools that must address real people, ideally tools
+that ask you before they act:
+
+```yaml
+tool_restore:
+  default: keep
+  allow: [send_email]          # your own tool names
+```
+
+**OpenClaw** (2026.10.7, from its tools index). Kept by default: `exec`, `terminal`, `code_execution`, `web_fetch`,
+`web_search`, `browser`, `message`. Real values: `read`, `write`, `edit`, `apply_patch`, `cron`.
+
+```yaml
+tool_restore:
+  allow: [message]             # only if replies go to your own channels or you approve each send:
+                               # `message` can address any channel, so allowing it lets it carry real values out
+  deny: [process, x_search, nodes]   # process writes to running commands; x_search queries X; nodes reaches
+                                     # paired devices. None of these match the built-in list.
+```
+
+**Claude Code** (from its tools reference). Kept by default: `Bash`, `PowerShell`, `WebFetch`, `WebSearch`,
+`SendMessage`, `PushNotification`. Real values: `Read`, `Write`, `Edit`, `NotebookEdit`, `Glob`, `Grep`, so files on
+your machine stay correct. Nothing to add for most setups; `deny: [RemoteTrigger]` if you use remote triggers.
+
+**Codex CLI** (tool names unverified: taken from third-party write-ups, not from Codex's source). Kept by default:
+`exec_command`, `shell`, `web_search`. `write_stdin` sends input to a running command and does not match the built-in
+list:
+
+```yaml
+tool_restore:
+  deny: [write_stdin]
+```
+
 ## Configuration
 
 Copy `swapback.example.yaml` to `swapback.yaml`, or point `SWAPBACK_CONFIG` at any file. Every key is optional
@@ -268,7 +307,7 @@ and has an environment override. Relative paths are relative to the config file.
 
 Renamed from pii-scrubber in 0.2.0: the old `PII_SCRUBBER_*` variables are still read when the `SWAPBACK_*` one is unset, but they are deprecated.
 
-Also: `tool_restore` (see [Tool calls](#tool-calls)), `phone_regions`, `url_swap`, `patterns` (turn single detectors
+Also: `tool_restore` (see [Tool calls](#tool-calls)), `hooks` (see [Hooks](#hooks)), `phone_regions`, `url_swap`, `patterns` (turn single detectors
 off, e.g. `{IP: false}`), `extra_secret_rules`, `log_requests`, `alert_min_interval_s`, `system_note`.
 
 **Known values** (`known.example.yaml`). The exact strings to swap, by type. The file is re-read when it changes; no
@@ -299,6 +338,77 @@ figures:
 `swapback scrub-file request.json`, and `swapback canary`, which sends a fake name and email through the running
 proxy and checks that the provider saw only placeholders and the client got the values back. `GET /scrubber/health` on
 the proxy returns counters. Every command takes `--help` and `--version`; `swapback-proxy --help` lists the settings it reads and exits without starting.
+
+## Hooks
+
+Swapback can call your own Python code at a few points of each request, for things that belong next to the privacy
+filter but are not part of it: a spend cap, a fallback to a local model when the provider is down or over quota,
+usage accounting, an extra health endpoint. Name a module (or a `.py` file, relative to the config file) in
+`swapback.yaml`; every function in it is optional:
+
+```yaml
+hooks:
+  module: spend_cap.py        # or an importable module name; entry_point: <name> reads the swapback.hooks group
+  options: {daily_usd: 5}     # handed to setup()
+```
+
+| function | when | may return |
+|---|---|---|
+| `setup(options, cfg)` | once, at start | |
+| `before_forward(req, ctx)` | before each request goes upstream | `None`, a new route `{"url", "body", "headers", "timeout_s"}`, or `{"respond": {"status", "json"}}` to answer without calling anyone |
+| `on_upstream_response(resp, ctx)` | the upstream answered >= 400 or was unreachable (`resp.status` is `None`) | `None`, or a route to try once instead |
+| `on_usage(obj, ctx)` | each JSON reply and each SSE event, as the provider sent it | |
+| `on_complete(result, ctx)` | once per request, after the reply (`status`, response `headers`, `rerouted`) | |
+| `extra_routes()` | at start | `{"/path": fn}`: extra GET endpoints, `fn()` returns JSON or `(status, json)` |
+| `alert(text)` | instead of `alert_webhook` | |
+
+`req` has `method`, `path`, `headers` (the outgoing headers; edit it in place, for example to drop a header only your
+hook reads), `body` (parsed JSON, read-only: return `{"body": ...}` to change it) and `api` (`chat`, `anthropic`,
+`responses`). `ctx` is one dict per request shared by all calls; anything you put in `ctx["log"]` is written to
+`requests.jsonl` under `hook` (keep it to counts and short words).
+
+**Hooks never see real values.** In `mode: on` they get the request after scrubbing and the replies before restore,
+so `«EMAIL_1»`, not the address. A rerouted or locally answered reply is restored like any other. In `watch` and
+`off` nothing is scrubbed, so a hook sees what is forwarded.
+
+**Failure policy.** An exception in `setup` stops the proxy from starting. An exception in `before_forward` or
+`on_upstream_response` fails closed: 503, nothing forwarded, an alert, like a scrub error. `on_usage`, `on_complete`
+and `alert` run after the reply has started, so their exceptions are only counted (`hook_errors` in
+`/scrubber/health`). A changed `hooks` section needs a restart.
+
+A daily spend cap that falls back to a local llama.cpp server once the cap is reached:
+
+```python
+# spend_cap.py
+import datetime
+SPENT, OPT = {}, {}
+PRICE = {"prompt_tokens": 3e-6, "completion_tokens": 15e-6}      # USD per token, your provider's prices
+
+def setup(options, cfg):
+    OPT.update(options)
+
+def _today():
+    return datetime.date.today().isoformat()
+
+def before_forward(req, ctx):
+    if SPENT.get(_today(), 0) >= OPT["daily_usd"] and req.api == "chat":
+        ctx["log"]["capped"] = 1
+        return {"url": "http://127.0.0.1:8080/v1/chat/completions", "body": dict(req.body, model="local")}
+
+def on_upstream_response(resp, ctx):                  # provider down or over quota: same request, local model
+    if resp.status is None or resp.status in (429, 503):
+        return {"url": "http://127.0.0.1:8080/v1/chat/completions", "body": dict(ctx["request"].body, model="local")}
+
+def on_usage(obj, ctx):
+    u = obj.get("usage") if isinstance(obj, dict) else None
+    if u:
+        SPENT[_today()] = SPENT.get(_today(), 0) + sum(u.get(k, 0) * p for k, p in PRICE.items())
+
+def extra_routes():
+    return {"/spend": lambda: {"today_usd": round(SPENT.get(_today(), 0), 4), "cap_usd": OPT["daily_usd"]}}
+```
+
+`swapback check-config` lists the hook functions it found.
 
 ## Comparison
 
@@ -450,7 +560,8 @@ See [CONTRIBUTING.md](https://github.com/rmpmrepo1278/swapback/blob/main/CONTRIB
 - ~~Build the known-values file from a contacts export.~~ Done in 0.3.0 (`swapback known init`).
 - Optional, pluggable NER for names you never listed, off by default.
 - More national ID and address patterns, with tests from synthetic data.
-- Release on PyPI (the package builds and a Trusted Publishing workflow is in place; not published yet).
+- ~~Release on PyPI.~~ Done: `pip install swapback`.
+- ~~Hooks for spend caps, local fallback and usage accounting.~~ Done in 0.4.0.
 
 Ideas and pull requests are welcome; open an issue first for anything large.
 

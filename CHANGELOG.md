@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-11-09
+
+### Added
+- **Hooks.** A `hooks:` section in `swapback.yaml` names a Python module (or a `.py` file, or a `swapback.hooks`
+  entry point) whose optional functions run around each request: `before_forward` (reroute, change the body or
+  headers, or answer directly), `on_upstream_response` (the upstream answered an error or was unreachable: try another
+  route once), `on_usage` (each JSON reply and SSE event, for spend tracking), `on_complete`, `extra_routes` (extra GET
+  endpoints) and `alert` (deliver alerts yourself). Hooks only ever see scrubbed requests and unrestored replies, so
+  placeholders, never real values; rerouted and locally answered replies are restored like any other. Exceptions in
+  `before_forward` and `on_upstream_response` fail closed with a 503. Use it for a spend cap with a local-model
+  fallback, usage accounting or a health endpoint; see the README's "Hooks" section.
+- `/scrubber/health` reports the hooks module and `hook_errors`; `swapback check-config` lists the hook functions.
+- README "Framework recipes": example `tool_restore` lists for OpenClaw, Claude Code, Codex CLI and a strict generic
+  setup. Config only; swapback has no framework-specific code.
+
 ## [0.3.0] - 2026-11-09
 
 ### Security
