@@ -83,7 +83,7 @@ def test_dictionary_word_names_are_left_in_ordinary_text(tmp_path, text):
     assert _scr(tmp_path).scrub_text(text) == text
 
 
-@pytest.mark.parametrize("text", ["Drew Wells called.", "DREW WELLS", "Wells, Drew", "Jack Frost said hi",
+@pytest.mark.parametrize("text", ["Drew Wells called.", "Wells, Drew", "Jack Frost said hi",
                                   "Gene Pool", "Lee, Grace said", "ngozi okafor called", "okafor, ngozi"])
 def test_names_as_written_still_swap(tmp_path, text):
     assert "\u00abPERSON_" in _scr(tmp_path).scrub_text(text)

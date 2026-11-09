@@ -899,12 +899,19 @@ def test_variant_in_unscrubbed_field_is_blocked(sc2):
 
 
 @pytest.mark.parametrize("text", [
-    "Jane went to the Testperson museum", "Janet Testpersonal", "Jane,Testperson",
+    "Jane went to the Testperson museum", "Janet Testpersonal",
     "the quick brown fox jumps over the lazy dog", "a well-known re.match_case e-mail of 20%", "jane", "testperson",
-    "x_Jane_Testperson_y", "Jane.Testpersons", "mail.Jane.Testperson"])
+    "Jane.Testpersons"])
 def test_variants_no_false_positives(sc2, text):
     assert sc2.scrub_text(text) == text
     assert sc2.leftover_known(text) == 0
+
+
+@pytest.mark.parametrize("text", ["Jane,Testperson", "x_Jane_Testperson_y", "mail.Jane.Testperson"])
+def test_variants_the_matcher_leaves_are_blocked_by_the_skeleton_recheck(sc2, text):
+    # 0.4.4: the matcher keeps its whole-word edges, the egress re-check is looser on purpose: the name is still there
+    assert sc2.scrub_text(text) == text
+    assert sc2.leftover_known(text) > 0
 
 
 @pytest.mark.parametrize("text", ["/home/x/Jane.Testperson/notes.md", "~/jane_testperson/a.txt",

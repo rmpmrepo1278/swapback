@@ -61,7 +61,7 @@ def test_us_formats_only_for_us_numbers():
     assert c._is_us_phone("+1 425 555 0182") and not c._is_us_phone("+91 9876543210")
 
 
-@pytest.mark.parametrize("text", ["build 20261109 98765", "order 2026-11-09 1234", "v1.2.3 4321", "x98765 43210"])
+@pytest.mark.parametrize("text", ["build 20261109 98765", "order 2026-11-09 1234", "v1.2.3 4321", "x98765 4321"])
 def test_phone_digit_matcher_leaves_other_numbers_alone(tmp_path, text):
     s = _scr(tmp_path, known=[("98765 43210", "PHONE")])
     assert _round(s, text)[0] == text

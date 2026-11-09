@@ -102,7 +102,7 @@ def test_two_line_or_comma_free_address(tmp_path, text):
 # ---------------------------------------------------------------- unit: names that are ordinary phrases
 @pytest.mark.parametrize("text,swapped", [
     ("I will hunt for the keys", False), ("Will hunt season open?", False), ("The rose marsh by the river", False),
-    ("Will Hunt called", True), ("WILL HUNT called", True), ("Hunt, Will said", True), ("ask Rose Marsh", True),
+    ("Will Hunt called", True), ("WILL HUNT called", False), ("Hunt, Will said", True), ("ask Rose Marsh", True),
 ])
 def test_common_phrase_names_match_title_case_only(tmp_path, text, swapped):
     s = _scr(tmp_path, known=[("Will Hunt", "PERSON"), ("Rose Marsh", "PERSON")])

@@ -3,6 +3,47 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.4] - 2026-11-09
+
+Fixes from independent review #4 against the launch bar.
+
+### Security
+- **A listed phone with letters glued on leaked** (`503-555-0147x22`, `...0193ext9`, `5035550147abc`,
+  `Mob5035550147`), and so did a listed phone in a URL path with no host (`/u/5035550147/profile`). Letters before or
+  after a listed phone's digits no longer hide it, a country code glued on without `+` is read as one, and phones,
+  emails and IDs are never kept as "filesystem path segments" (only names are).
+- **A hyphenated listed name written with a space or without the hyphen leaked** (`Ferrand-Moreau` as
+  `Ferrand Moreau` or `FerrandMoreau`, also surname first). A hyphen inside a listed word is now interchangeable with
+  any separator or with nothing. A multi-word name written glued in one run of letters (`inesferrandmoreau`) is matched.
+- **The egress re-check is now structurally looser than the matcher.** Besides the matcher's own rules it runs a
+  skeleton check: each outgoing string and its decoded views (5 levels) reduced to letters and digits (accents
+  stripped, NFKD, zero-width and soft hyphens removed, `[at]`/`[dot]` dropped), searched for each listed value's
+  skeleton with loose edges, and for each listed phone's national digits in any digit run joined by up to 3
+  non-letters. Anything the matcher left that it finds blocks the request (`503`). On the maintainer's holdout the
+  re-check alone (swap off) saw 792/1,128 forms on 0.4.3 and 1,128/1,128 on 0.4.4; 0 false blocks on 1,743 chunks of ordinary text.
+- **A request with a lone `%XX` continuation byte (`caf%A0`, `%BF`) hung its proxy thread forever** at full CPU
+  (decoded-view loop did not advance; since 0.4.2). It is now kept as written.
+
+### Fixed
+- **Health said `ok` while every request was blocked** because the known file was deleted, unreadable or broken while
+  the proxy ran. It now reports `"status": "blocked"`, `"ok": false` with the reason in `warnings` (`swapback health`
+  exits 1) and returns to `ok` once a good file is read.
+- **A multi-line value restored into JSON inside JSON broke the inner JSON** (`json.dumps(json.dumps(...))` echoed
+  back). The restore now escapes once per string nesting level (up to 4), in whole replies, streams and tool-call
+  arguments.
+- **ALL-CAPS headings were swapped** ("CAROL SINGER WANTED" for a listed "Carol Singer"). Names made only of
+  dictionary words now match in Title Case only; ALL-CAPS needs `common_names_all_caps: true`.
+- `swapback --help | head` (and `swapback-proxy --help | head`) no longer ends with a `BrokenPipeError` traceback.
+- Health and the start line report `"known"` as your listed values (an empty list reads 0, not 2); the two built-in
+  canary values are `"known_builtin"`. During a held shrink the count matches the warning.
+- README: the comparison table's "Encoded spellings" row had 5 of 7 cells; the safety-check description now says
+  exactly what is checked and what is out of scope.
+
+### Tests
+- `swapback selftest` covers every review #4 repro (glued extensions, `Mob` prefix, host-less URL paths, hyphen
+  variants, ALL-CAPS headings, JSON-in-JSON multi-line restore, health while the file is deleted and broken) and
+  reports the skeleton layer alone. `tests/test_v044.py` adds unit tests for each.
+
 ## [0.4.3] - 2026-11-09
 
 Fixes from independent review #3 against the launch bar.

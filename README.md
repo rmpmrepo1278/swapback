@@ -34,30 +34,52 @@ agents; swapback does it for any agent, by tool-name globs. From `swapback demo`
 ```
 
 **Every common spelling, and a re-check that fails closed.** A listed value is matched in its written variants: any
-case, extra or non-breaking spaces, `.` `_` `-` `+` `/` between words, surname first, accent-free (`ø` → `o`),
-phone groupings with or without the country code. It is also matched when the text is encoded: JSON `\uXXXX`, `\n`
-and other escapes (JSON inside JSON up to 3 levels), HTML entities, `%XX` URL encoding and form encoding (`+` for a
-space, `?q=Jane+Doe`), decomposed accents (NFD), zero-width characters and fullwidth digits or letters. After the swap,
-every outgoing string is checked again in all of those spellings; a listed value still readable, or any scrub error,
-blocks the request (`503`) instead of sending it. **Out of scope:** base64, hex, rot13 and other re-encodings, a
-value split across separate fields, and names you never listed (there is no NER).
+case, extra or non-breaking spaces, `.` `_` `-` `+` `/` between words, a hyphen inside a name written as a space or as
+nothing (`Ferrand-Moreau`, `Ferrand Moreau`, `FerrandMoreau`, also surname first), surname first, accent-free (`ø` →
+`o`), phone groupings with or without the country code, and a listed phone with letters glued on (`503-555-0147x22`,
+`...0147ext9`, `Mob5035550147`) or inside a URL path (`/u/5035550147/profile`). It is also matched when the text is
+encoded: JSON `\uXXXX`, `\n` and other escapes (JSON inside JSON up to 3 levels), HTML entities, `%XX` URL encoding
+and form encoding (`+` for a space, `?q=Jane+Doe`), decomposed accents (NFD), zero-width characters and fullwidth
+digits or letters.
 
-- **Measured, and you can re-run it.** `swapback selftest` (5 seconds, made-up data shipped in the package) sends
-  each listed value in 183 written forms through 7 request paths. 0.4.3: 33/33 listed values caught, 0 of 1,281 forms
-  leaked, the re-check alone (swap switched off) sees 549/549 forms, 51/51 ordinary sentences untouched, 1,183/1,183
-  exact round trips. Unlisted values caught by the patterns alone: 6/8 (both unlisted names missed). A second holdout
-  with different made-up data (45 listed values, 53 ordinary sentences; written by the maintainer, not independent):
-  0.4.2 caught 8/45 and leaked 731 of 1,673 forms, 0.4.3 caught 45/45 and leaked 0; ordinary text untouched 44/53 →
-  53/53; unlisted 6/11. See [Leak test](#leak-test-swapback-selftest).
+After the swap, every outgoing string is checked again, two ways, and either one blocks the request (`503`) instead of
+sending it: (1) the matcher's own rules again, in all of the spellings above; (2) a **skeleton check** that does not use
+the matcher's rules. It reduces the string, and each decoded view of it (escapes, entities and `%XX`, up to 5 levels),
+to letters and digits only (accents stripped, NFKD-folded so fullwidth forms and ligatures become plain letters,
+zero-width characters and soft hyphens removed, `[at]`/`[dot]` dropped), and looks for each listed name, email, ID and
+address reduced the same way (at least 6 letters and digits; addresses 10), with any punctuation or nothing between
+its parts, and for each listed phone's national digits in any run of digits joined by up to 3 non-letters, whatever
+letters sit around it. The skeleton check keeps three of the matcher's rules on purpose: whitespace inside one word of a
+listed value does not join (`Ellis on` is not `Ellison`), a dictionary-word name counts only when written as a name
+(see below), and a name that is a filesystem path segment (`/home/jane/`) is left. Any scrub error blocks too.
+**Out of scope:** base64, hex, rot13 and other re-encodings, a value split across separate fields or messages, letters
+spaced out with whitespace, listed names shorter than 6 letters in a spelling the matcher does not know (the skeleton
+check skips them), and names you never listed (there is no NER).
+
+- **Measured, and you can re-run it.** `swapback selftest` (6 seconds, made-up data shipped in the package) sends
+  each listed value in 215 written forms through 7 request paths. 0.4.4: 33/33 listed values caught, 0 of 1,505 forms
+  leaked, the re-check alone (swap switched off) sees 645/645 forms and its skeleton layer alone 430/430, 57/57
+  ordinary sentences untouched (including ALL-CAPS headings), 1,407/1,407 exact round trips, 56/56 JSON-in-JSON
+  multi-line restores valid, health reads `blocked` when the list file is deleted or broken mid-run. Unlisted values
+  caught by the patterns alone: 6/8 (both unlisted names missed). A second holdout with different made-up data (45
+  listed values incl. glued phone extensions, hyphen variants and host-less URL paths, 64 ordinary sentences incl.
+  ALL-CAPS headings; written by the maintainer, not independent): 0.4.3 caught 27/45 and leaked 756 of
+  2,538 requests, 0.4.4 caught 45/45 and leaked 0; the re-check alone saw 792/1,128 → 1,128/1,128 forms (skeleton layer
+  alone 846/846); ordinary sentences untouched 60/64 → 64/64; false blocks on 1,743 chunks of ordinary text
+  (Python standard library source): 0. See [Leak test](#leak-test-swapback-selftest).
 - **Byte-exact restore.** The reply gets back the string as you wrote it: same case, same phone format, same spacing.
   A value restored inside a JSON reply (JSON mode, structured output) is JSON-escaped, so the reply stays valid JSON.
 - **Fails closed, loudly.** A scrub error, an unreadable body, a missing or empty known file or a known value still
   present after the swap answers `503`, with a message in the API's own error shape that says what was blocked and why,
-  plus one log line on stderr. A known file that suddenly shrinks keeps the old values protected, logs a warning and
-  turns `/scrubber/health` to `"status": "warning"`, `"ok": false` (and `swapback health` exits 1).
+  plus one log line on stderr. A known file that goes missing or unreadable while the proxy runs turns
+  `/scrubber/health` to `"status": "blocked"`, `"ok": false` until a good file is read again; one that suddenly shrinks
+  keeps the old values protected, logs a warning and turns it to `"status": "warning"`, `"ok": false` (either way
+  `swapback health` exits 1). `"known"` in health counts your listed values (the two built-in canary values are
+  `"known_builtin"`).
 - **Names that are ordinary words stay out of ordinary sentences.** A listed name made only of dictionary words
   ("Drew Wells", "Jack Frost") is matched only when written as a name, every word capitalised, so "she drew wells"
-  goes out unchanged. `common_names_title_case: false` matches them in any case.
+  goes out unchanged; ALL-CAPS ("CAROL SINGER WANTED") counts as a heading, not a name, unless you set
+  `common_names_all_caps: true`. `common_names_title_case: false` matches them in any case.
 - **Not a replacement for NER.** Names you never listed go out as written. Use it alongside an NER tool if you need
   that ([Use alongside other tools](#use-alongside-litellm-or-an-ner-tool)).
 
@@ -224,9 +246,10 @@ for them. `python examples/smoke.py` runs the same check offline against the moc
    - a few local rules: street addresses, keyword-anchored account numbers and dates of birth, order numbers, and
      gap rules for emails written as `name [at] example [dot] org` or with a full-width `＠` or hidden zero-width
      characters, and IPv6 addresses.
-2. **Re-check.** After the swap, every outgoing string is checked again for known values, with the same variant rules
-   and in the same decoded and normalized views. If one is left, the request is blocked. `swapback selftest` checks
-   this on its own, with the swap switched off: every form must be seen by the re-check.
+2. **Re-check.** After the swap, every outgoing string is checked again for known values: with the same variant rules
+   in the same decoded and normalized views, and with the looser skeleton check described above (letters and digits
+   only, no matcher rules). If either finds one, the request is blocked. `swapback selftest` checks this on its own,
+   with the swap switched off: every form must be seen by the re-check, and it reports the skeleton layer alone.
 3. **Forward or block.** Paths, headers (including `Authorization`) and the model name pass through unchanged. Any error
    while scrubbing answers `503` with a `scrubber_error`, and nothing is forwarded.
 4. **Restore.** Placeholders in the reply are swapped back to the original text: plain JSON responses anywhere in the
@@ -365,6 +388,8 @@ off, e.g. `{IP: false}`), `common_names_title_case` (default `true`), `allow_emp
 changes (also a save by rename); no restart needed. Guard rails, so a broken file never silently protects nothing:
 
 - A configured known file with no values blocks every request (set `allow_empty_known: true` if you mean it).
+- A known file deleted, unreadable or broken while the proxy runs blocks every request and reports `"status":
+  "blocked"`, `"ok": false` in `/scrubber/health` (`swapback health` exits 1) until a good file is read again.
 - If a reload finds the file empty or less than half its previous size, the proxy keeps protecting the previous values
   as well, prints a warning line on stderr, sends an alert and reports `"status": "warning"`, `"ok": false` in
   `/scrubber/health`. Restart the proxy to accept a smaller list.
@@ -515,7 +540,7 @@ Other open-source projects do the same job. This table reflects each project's o
 | On a scrub error | Fails closed (`503`) + egress re-check | Unclear | Unclear; documents a passthrough that forwards plaintext when masking is off or the app exits | Fails closed (`502`) + a second guard on the outgoing bytes (plain, encoded, transformed, truncated) | Unclear | Unclear |
 | Tool-call egress policy (a prompt-injected `web_fetch`/`send_email` can't carry real values out) | Yes, default on, by tool-name globs for any agent; streamed tool arguments held until the call is complete | Unclear | Unclear | Yes, built around coding-agent tools and shell commands | Unclear | Unclear |
 | OpenAI Responses API streams restored | Yes (`/v1/responses`, Codex) | Unclear | Unclear | Yes (Codex CLI) | Unclear | Unclear |
-| Encoded spellings checked before sending | `\uXXXX`/`\n` escapes, nested JSON, HTML entities, `%XX`, `+` for space, NFD, zero-width, fullwidth; not base64 or shell transforms | Unclear | Unclear | Yes, wider: a 21-transform bypass matrix (byte dumps, base64, rot13, ...) in its regression suite |
+| Encoded spellings checked before sending | `\uXXXX`/`\n` escapes, nested JSON, HTML entities, `%XX`, `+` for space, NFD, zero-width, fullwidth; not base64 or shell transforms | Unclear | Unclear | Yes, wider: a 21-transform bypass matrix (byte dumps, base64, rot13, ...) in its regression suite | Unclear | Unclear |
 | Fails closed on an empty or shrunk list, or a listed value left after the swap | Yes: blocks (empty), keeps old values + warns (shrunk), egress re-check in every spelling above | Unclear | Unclear | Fails closed on errors and leftovers; list-shrink guard unclear | Unclear | Unclear |
 | Leak test you can re-run | `swapback selftest`: one command after `pip install`, made-up data in the package, 5 s, prints the numbers above | No | No | Yes: bypass matrix and leak checks in its test suite, with real-traffic numbers in its README | No | No |
 | APIs | OpenAI Chat and Responses, Anthropic Messages (JSON and streaming) | OpenAI Chat + Responses, Anthropic, Codex | OpenAI, DeepSeek, Anthropic | Anthropic Messages, OpenAI Chat + Responses, Bedrock, Vertex, more | OpenAI and Anthropic connectors; LangChain, Pydantic AI, LlamaIndex, Claude Code integrations | OpenAI; Anthropic named in its diagram |
@@ -603,8 +628,8 @@ swapback selftest          # or: swapback selftest --json
 
 It needs no config, key or network. A recording fake model and the proxy start on loopback ports with a fixed list of
 made-up values shipped in the package: 15 names (5 with accents, 6 made only of ordinary words), 4 emails, 7 phones
-(US, India, UK, Australia, Germany, France), 4 IDs and 3 addresses. Each value is sent in 4–9 written forms (as
-written, upper case, surname first, accent-free, other phone groupings, compact IDs, two-line addresses, and the
+(US, India, UK, Australia, Germany, France), 4 IDs and 3 addresses. Each value is sent in 4–14 written forms (as
+written, upper case, surname first, accent-free, hyphen variants, other phone groupings, glued extensions, compact IDs, two-line addresses, and the
 encoded forms: `quote_plus` URL/form encoding, `+` or `/` between words, decomposed accents (NFD), a zero-width space
 inside a word, fullwidth digits) through 7 paths: OpenAI chat, chat streamed, chat with the value in tool-call
 arguments and a `json.dumps` tool result, Anthropic streamed, Anthropic `tool_use`/`tool_result`, Responses streamed
@@ -615,25 +640,33 @@ decoded spelling. The leak check does not use swapback's matcher: it decodes JSO
 for each value's name words, email, phone digits, ID characters and street line. It also runs the egress re-check on
 its own, with the swap switched off, on every form as text, as a `json.dumps` tool result and as JSON inside JSON.
 
-0.4.3 on Python 3.11:
+0.4.4 on Python 3.11:
 
 ```text
-swapback selftest: 33 made-up listed values, 183 written forms, 7 paths, 1281 requests (4.8 s)
+swapback selftest: 33 made-up listed values, 215 written forms, 7 paths, 1505 requests (5.8 s)
   listed values caught (no form reached the model): 33/33 (100.0%)
-  forms leaked to the model:                        0 of 1281 sent
-  egress re-check alone (swap off) sees the form:   549/549 (100.0%)
-  ordinary sentences left untouched:                51/51 (100.0%)
-  exact round trips:                                1183/1183 (100.0%)
+  forms leaked to the model:                        0 of 1505 sent
+  egress re-check alone (swap off) sees the form:   645/645 (100.0%)
+  skeleton layer alone (no matcher rules) sees it:  430/430 (100.0%)  (reported; ordinary sentences it flags: 0)
+  ordinary sentences left untouched:                57/57 (100.0%)
+  exact round trips:                                1407/1407 (100.0%)
+  JSON-in-JSON multi-line restores, valid + exact:  56/56 (100.0%)
+  health blocked when the list file breaks mid-run: 4/4 (100.0%)
   %XX-encoded forms back as the same value, decoded: 98/98 (100.0%)
   unlisted values caught by the pattern detectors:  6/8 (75.0%)  (reported, not a pass condition; names are never caught without a list)
 PASS
 ```
 
-The same test against 0.4.2 (the 0.4.3 selftest file copied into a 0.4.2 install): 5/33 caught, 549 of 1,281 forms
-leaked (`+`-encoded, NFD, zero-width and fullwidth forms), the re-check alone saw 288/549 forms, 46/51 ordinary
-sentences untouched ("drew wells", "gene pool"). With different made-up data (45 listed values, 53 ordinary sentences,
-11 unlisted; written by the maintainer, not an independent review), 0.4.2 → 0.4.3: listed caught 8/45 → 45/45, forms
-leaked 731/1,673 → 0/1,673, ordinary sentences untouched 44/53 → 53/53, unlisted caught 6/11 both times.
+The 0.4.4 selftest adds the review #4 forms (a listed phone with `x22`/`ext9`/letters glued on, after `Mob`, in a
+host-less URL path; a hyphenated name with the hyphen as a space or as nothing, also surname first; ALL-CAPS headings
+as ordinary sentences), a JSON-inside-JSON restore of multi-line values, and a health check while the list file is
+deleted and broken. "Skeleton layer alone" runs only the matcher-free part of the re-check; the forms it does not
+cover by design (lower-case and ALL-CAPS dictionary-word names) are not sent. With different made-up data (45 listed
+values, 64 ordinary sentences; written by the maintainer, not an independent review), 0.4.3 → 0.4.4: listed caught
+27/45 → 45/45, requests leaking 756/2,538 → 0/2,538 (glued extensions, `Mob` prefixes, URL paths, hyphen
+variants), re-check alone 792/1,128 → 1,128/1,128, ordinary sentences untouched 60/64 → 64/64 (ALL-CAPS headings),
+JSON-in-JSON multi-line restores valid 0/21 → 21/21, requests blocked on 1,743 chunks of ordinary text (Python
+standard library source) 0 → 0.
 
 ## Performance
 

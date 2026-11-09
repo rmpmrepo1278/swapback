@@ -100,11 +100,14 @@ class H(BaseHTTPRequestHandler):
                 STATE["last_error"] = str(e)[:120]
             warn = SCR.warnings()
             # status: "ok"; "warning" when the known file shrank sharply (ok is false while the previous values are still
-            # being protected, so a monitor that reads ok notices); "blocked" when every request is refused
-            status = "blocked" if SCR.known_block else "warning" if SCR.known_warning else "ok"
-            return self._send_json(200, {"ok": not SCR.known_block and not SCR.known_held, "status": status,
+            # being protected, so a monitor that reads ok notices); "blocked" when every request is refused (an empty
+            # list, or the file went missing or unreadable while running; back to ok once a good file is read)
+            ok, status, why = SCR.status()
+            if why and why not in warn:
+                warn = [why] + list(warn)
+            return self._send_json(200, {"ok": ok, "status": status,
                                          "mode": CFG["mode"],
-                                         "known": len(SCR.known),
+                                         "known": SCR.known_count(), "known_builtin": len(S.CANARY),
                                          "vault": len(SCR.rev), "warnings": warn,
                                          "requests": STATE["requests"], "blocked": STATE["blocked"],
                                          "errors": STATE["errors"], "last_error": STATE["last_error"],
@@ -477,7 +480,10 @@ def cli_parser():
 
 def main(argv=None):
     argv = sys.argv if argv is None else argv
-    cli_parser().parse_args(argv[1:])            # --help/--version/unknown flags exit here; no config load, no port
+    try:
+        cli_parser().parse_args(argv[1:])        # --help/--version/unknown flags exit here; no config load, no port
+    except BrokenPipeError:                      # `swapback-proxy --help | head`
+        S._quiet_pipe()
     try:
         srv = make_server()
     except S.ScrubError as e:                    # a missing/broken known file at startup: one readable line, no traceback
@@ -485,7 +491,7 @@ def main(argv=None):
               file=sys.stderr, flush=True)
         sys.exit(2)
     h, p = srv.server_address[:2]
-    print(json.dumps({"listening": "%s:%s" % (h, p), "mode": CFG["mode"], "known": len(SCR.known),
+    print(json.dumps({"listening": "%s:%s" % (h, p), "mode": CFG["mode"], "known": SCR.known_count(),
                       "private_rules": len(SCR.private), "upstream": "%s://%s" % (UP.scheme, UP.netloc),
                       "hooks": HOOKS.name or None}), flush=True)
     for w in SCR.warnings():

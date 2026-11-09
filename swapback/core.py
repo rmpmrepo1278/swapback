@@ -216,18 +216,41 @@ MATCH_SEP_RX = r"(?:[\s\u200b\u200c\u200d\u2060\ufeff._\-+/]|%20)+"
 LOOSE_SEP_RX = r"(?:[\s\u200b\u200c\u200d\u2060\ufeff._\-+/,;]|%20)+"
 
 
+def _variant_words(key, loose=False):
+    """the words of a listed multi-word or hyphenated value, as _variant_rx joins them."""
+    return [w for w in re.split(r"[\s,;]+", key) if w] if loose else [w for w in key.split(" ") if w]
+
+
 def _variant_rx(key, loose=False):
     """regex for a known multi-word value in any separator/case variant, with the matcher's whole-word edges.
-    loose: commas and semicolons count as separators too (addresses and other non-name values)."""
-    words = [w for w in re.split(r"[\s,;]+", key) if w] if loose else key.split(" ")
+    loose: commas and semicolons count as separators too (addresses and other non-name values).
+    A hyphen inside a listed word is interchangeable with any separator or with nothing: "Ferrand-Moreau",
+    "Ferrand Moreau", "Ferrand.Moreau" and "FerrandMoreau" are the same written value."""
+    words = _variant_words(key, loose)
     sep = LOOSE_SEP_RX if loose else MATCH_SEP_RX
-    return re.compile(r"(?<![\w@.])" + sep.join(re.escape(w) for w in words) + r"(?![\w@])", re.I)
+
+    def word(w):
+        parts = [p for p in w.split("-") if p]
+        return ("(?:%s)?" % sep).join(re.escape(p) for p in parts) if parts else re.escape(w)
+    return re.compile(r"(?<![\w@.])" + sep.join(word(w) for w in words) + r"(?![\w@])", re.I)
 
 
 def _title_case(surface):
     """every word of the surface form starts with a capital ("Will Hunt", "WILL HUNT", "Hunt, Will")."""
     w = re.findall(r"[^\W\d_]+", surface)
     return bool(w) and all(x[0].isupper() for x in w)
+
+
+def _all_caps(surface):
+    """every letter is a capital ("CAROL SINGER WANTED"): a heading or a shout, not how a name is written."""
+    w = "".join(re.findall(r"[^\W\d_]+", surface))
+    return len(w) > 1 and w.isupper()
+
+
+def _name_case(surface, all_caps=False):
+    """written the way a name is: Title Case ("Will Hunt", "Hunt, Will"). ALL-CAPS counts only with all_caps
+    (common_names_all_caps: true), so a heading "CAROL SINGER WANTED" is left alone by default."""
+    return _title_case(surface) and (all_caps or not _all_caps(surface))
 
 
 # ---------------------------------------------------------------- escaped text (decoded views)
@@ -268,6 +291,8 @@ def _unesc_tok(tok):
         while i < len(b):
             n = 1 if b[i] < 0x80 else 2 if 0xC0 <= b[i] < 0xE0 else 3 if 0xE0 <= b[i] < 0xF0 else 4 if 0xF0 <= b[i] < 0xF8 else 0
             try:
+                if not n:                                 # a lone continuation byte (%A0, %BF) or 0xF8+: kept as written
+                    raise ValueError
                 out.append((b[i:i + n].decode("utf-8"), 3 * i))
                 i += n
             except (UnicodeDecodeError, ValueError):
@@ -472,6 +497,24 @@ _ID_TYPES = ("ID", "SSN", "ACCOUNT", "CARD", "IBAN", "ORDER")
 _TRANSLIT = str.maketrans({"\u00f8": "o", "\u00d8": "O", "\u0142": "l", "\u0141": "L", "\u0111": "d", "\u0110": "D",
                            "\u00e6": "ae", "\u00c6": "Ae", "\u0153": "oe", "\u0152": "Oe", "\u00df": "ss", "\u00fe": "th",
                            "\u00de": "Th", "\u0131": "i", "\u00f0": "d", "\u00d0": "D"})
+
+
+_SK_DROP = re.compile("[\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\ufe20-\ufe2f\u200b\u200c\u200d"
+                      "\u2060\ufeff\u00ad\u034f\u180e\u3099\u309a]")
+_SK_NONAN = re.compile(r"[\W_]+")
+_SK_ATDOT = re.compile(r"[\[({<]\s*(?:at|dot)\s*[\])}>]", re.I)          # name [at] example [dot] com
+_SK_ALNUM = re.compile(r"[^\W_]")
+_SK_DIGITRUN = re.compile(r"\d+(?:[\W_]{1,3}\d+)*")
+_NONDIGIT = re.compile(r"\D")
+_DIGITS = re.compile(r"\d+")
+
+
+def skeleton_text(text):
+    """text reduced for the skeleton re-check: letters without accents (ø->o, ß->ss), compatibility forms folded
+    (NFKD: fullwidth digits and letters, ligatures), zero-width characters and soft hyphens removed."""
+    import unicodedata
+    t = _SK_DROP.sub("", unicodedata.normalize("NFKD", text.translate(_TRANSLIT)))
+    return _SK_ATDOT.sub(" ", t) if "at" in t or "dot" in t or "AT" in t or "DOT" in t else t
 
 
 def _strip_accents(v):
@@ -875,11 +918,17 @@ class Scrubber:
         name_t = ("PERSON", "FAMILY", "ORG")
         self.known_var = []
         for k in keys:
-            if " " not in k:
+            if " " not in k and "-" not in k.strip("-"):
                 continue
             loose = self.known[self.alias.get(k, k)][1] not in name_t
-            ws = [w for w in re.split(r"[\s,;]+", k) if w] if loose else k.split(" ")
+            ws = [p for p in re.split(r"[\s,;\-]+", k) if p]
+            if len(ws) < 2:
+                continue
             self.known_var.append((k, _variant_rx(k, loose), ws[0], ws[-1]))
+            # a multi-word name written glued in one run of letters ("inesferrandmoreau", "janedoe1990@...")
+            j = "".join(ws)
+            if not loose and len(j) >= 8 and j.isalpha():
+                self.known_var.append((k, re.compile(r"(?<![^\W\d_])" + re.escape(j) + r"(?![^\W\d_])", re.I), j, j))
         # listed names made only of ordinary words ("Will Hunt", "Rose Marsh") match only when every word is
         # capitalised, so "I will hunt for the keys" stays as it is (common_names_title_case: false to match any case)
         self.strict = set()
@@ -890,6 +939,7 @@ class Scrubber:
             self.strict |= {a for a, k in self.alias.items() if k in self.strict}
         self.cache = {}
         self.verified = set()
+        self._sk_build()
 
     _DIGIT_GROUP = re.compile(r"\d+")
 
@@ -902,10 +952,7 @@ class Scrubber:
         g = [(m.start(), m.end(), m.group(0)) for m in self._DIGIT_GROUP.finditer(text)]
         out, i = [], 0
         while i < len(g):
-            s0 = g[i][0]
-            if s0 and (text[s0 - 1].isalpha() or text[s0 - 1] == "_"):
-                i += 1
-                continue
+            s0 = g[i][0]                  # letters glued before or after do not hide it: Mob5035550147, ...0147x22
             acc, best = "", None
             plus = text[max(0, s0 - 2):s0].endswith(("+", "+("))       # a country code may lead the digits
             for j in range(i, len(g)):
@@ -914,14 +961,13 @@ class Scrubber:
                 acc += g[j][2]
                 if len(acc) > top:
                     break
-                cands = [acc] + ([acc[1:]] if acc[0] == "0" else []) + ([acc[k:] for k in (1, 2, 3)] if plus else [])
+                # a country code may lead the digits with or without its "+" (Mob447700900193): up to 3 digits
+                cands = [acc] + ([acc[1:]] if acc[0] == "0" else []) + [acc[k:] for k in (1, 2, 3) if len(acc) - k >= 7
+                                                                        and (plus or j == i)]
                 for x in cands:
                     k = cores.get(x)
                     if k is not None:
-                        e = g[j][1]
-                        if e < len(text) and (text[e].isalpha() or text[e] == "_"):
-                            continue
-                        best = (j, e, k)
+                        best = (j, g[j][1], k)
                         break
                 if best:
                     break
@@ -995,6 +1041,30 @@ class Scrubber:
         as well, raises an alert and shows a warning in /scrubber/health (restart the proxy to accept a smaller list)."""
         if self._known_fixed and self._private_fixed:
             return
+        try:
+            self._reload(force)
+            self.load_error = ""
+        except ScrubError as e:                       # missing / unreadable / broken while running: health says blocked
+            self.load_error = str(e)
+            raise
+
+    load_error = ""
+
+    def known_count(self):
+        """listed values in force (your file, plus previous values held after a shrink), not counting the two
+        built-in canary values."""
+        return len(self.known_user) if self.known_user is not None else max(0, len(self.known) - len(CANARY))
+
+    def status(self):
+        """(ok, status, reason): blocked (every request is refused: empty list, or the file is missing or unreadable
+        while running), warning (a shrunk list is held), or ok."""
+        if self.known_block or self.load_error:
+            return False, "blocked", self.known_block or self.load_error
+        if self.known_warning:
+            return (not self.known_held), "warning", self.known_warning
+        return True, "ok", ""
+
+    def _reload(self, force=False):
         mt = self._mtimes()
         if not force and mt == self.known_mtime:
             return
@@ -1151,7 +1221,8 @@ class Scrubber:
         value the swap missed in any spelling the model can read blocks the request instead of leaving."""
         if not text:
             return 0
-        return len(self._known_hits(text)) + len(self._private_hits_full(text))
+        n = len(self._known_hits(text)) + len(self._private_hits_full(text))
+        return n or len(self.skeleton_hits(text))
 
     def _private_hits_full(self, text, low=None):
         """[(start, end, TYPE, surface)] private-term hits in text and in its decoded views, mapped back to text."""
@@ -1191,13 +1262,141 @@ class Scrubber:
                     out.append(h)
                     last = h[1]
             hits = out
-        if hits and "/" in text:
-            hits = [h for h in hits if not in_fs_path(text, h[0], h[1])]
+        if hits and "/" in text:            # a name that is a path segment (/home/jane/) is kept; a phone, email or
+            hits = [h for h in hits if not (self._is_name(h[2]) and in_fs_path(text, h[0], h[1]))]   # ID never is
         if hits and self.strict:
-            hits = [h for h in hits if self.alias.get(h[2], h[2]) not in self.strict or _title_case(text[h[0]:h[1]])]
+            caps = bool(self.cfg.get("common_names_all_caps", False))
+            hits = [h for h in hits if self.alias.get(h[2], h[2]) not in self.strict or
+                    _name_case(text[h[0]:h[1]], caps)]
         if hits and "," in text and self.cfg.get("common_names_title_case", True):
             hits = [h for h in hits if not self._comma_words(text[h[0]:h[1]], h[2])]
         return hits
+
+    # skeleton re-check --------------------------------------------
+    # The egress re-check does not rely on the matcher's rules. For every listed value it keeps a skeleton: letters and
+    # digits only, accents stripped, compatibility forms folded (NFKD: fullwidth, ligatures), case folded. Each
+    # outgoing string (and each decoded view of it) is reduced the same way and searched for those skeletons, with
+    # loose edges: any punctuation, symbol, escape residue or nothing between the parts, and letters or digits glued
+    # on at either end only where the letter/digit class or the case changes (Mob5035550147, x22). Listed phones are
+    # found as their national digits inside any run of digits joined by up to 3 non-letters, whatever letters sit
+    # around it. Whitespace inside a listed word does not join ("Ellis on" is not "Ellison"). Names that match only
+    # when written as names (dictionary-word names: Title Case) keep that rule here too, and a name that is a
+    # filesystem path segment is left, as in matching. Anything the matcher left that this finds blocks the request.
+    SK_MIN = {"PHONE": 7, "EMAIL": 6, "ADDRESS": 10}
+
+    def _sk_build(self):
+        ents, seen, cores = [], set(), set()
+        for k in list(self.known) + list(self.alias):
+            v, t = self.known[self.alias.get(k, k)]
+            src = k if k in self.alias else v
+            if t == "PHONE":
+                c = _phone_core(v)
+                if c:
+                    cores.add(c)
+                continue
+            words = [w.lower() for w in _SK_NONAN.split(skeleton_text(src)) if w]
+            sk = "".join(words)
+            if len(sk) < self.SK_MIN.get(t, 6) or (sk, t) in seen:
+                continue
+            seen.add((sk, t))
+            starts, n = set(), 0
+            for w in words:
+                starts.add(n)
+                n += len(w)
+            ents.append((sk, frozenset(starts), t, self.alias.get(k, k) in self.strict, k))
+        self.sk_ents, self.sk_cores = ents, cores
+        self.sk_core_lens = sorted({len(c) for c in cores})
+
+    def skeleton_hits(self, text):
+        """[(TYPE, key)] listed values the skeleton re-check finds in text or in any decoded view of it."""
+        if not text or len(text) < 6 or not (getattr(self, "sk_ents", None) or getattr(self, "sk_cores", None)):
+            return []
+        out, views = [], [text] + [d for d, _m in decoded_views(text, depth=5)]
+        for view in views:
+            out += self._sk_scan(skeleton_text(view))
+            if out:
+                break
+        return out
+
+    def _sk_scan(self, t):
+        out = []
+        if self.sk_cores and sum(c.isdigit() for c in t[:200000]) >= 7:
+            for m in _SK_DIGITRUN.finditer(t):
+                groups = _DIGITS.findall(m.group(0))
+                run = "".join(groups)
+                if len(run) < 7:
+                    continue
+                # a listed phone's national digits must start where a digit group starts (or after a country code /
+                # trunk prefix of up to 3 digits glued on) and end where a group ends: "0123456789" does not hold
+                # "9012345678", whatever letters or punctuation sit around the number
+                gs, ge, n0 = set(), set(), 0
+                for g in groups:
+                    gs.add(n0)
+                    n0 += len(g)
+                    ge.add(n0)
+                starts = gs | {1, 2, 3}
+                for n in self.sk_core_lens:
+                    if any(run[i:i + n] in self.sk_cores for i in starts if i + n in ge):
+                        out.append(("PHONE", None))
+                        return out
+        if not self.sk_ents:
+            return out
+        sk = _SK_NONAN.sub("", t)
+        low = sk.lower()
+        if len(low) != len(sk):
+            low = "".join((c.lower() or c)[:1] for c in sk)
+        pos = None
+        caps = bool(self.cfg.get("common_names_all_caps", False))
+        for s, starts, typ, strict, key in self.sk_ents:
+            i = low.find(s)
+            while i != -1:
+                if pos is None:
+                    pos = [m.start() for m in _SK_ALNUM.finditer(t)]
+                if self._sk_ok(t, sk, pos, i, i + len(s), starts, typ, strict, key, caps):
+                    out.append((typ, key))
+                    break
+                i = low.find(s, i + 1)
+        return out
+
+    def _sk_ok(self, t, sk, pos, i, j, starts, typ, strict, key, caps):
+        def edge(a, b):                     # sk[a], sk[b] side by side in t: a real boundary between them?
+            if pos[b] != pos[a] + 1:
+                return True
+            x, y = sk[a], sk[b]
+            return x.isdigit() != y.isdigit() or (x.islower() and y.isupper())
+        if i > 0 and not edge(i - 1, i):
+            return False
+        if j < len(sk) and not edge(j - 1, j):
+            return False
+        for q in range(i, j - 1):
+            g = pos[q + 1] - pos[q] - 1
+            if not g:
+                continue
+            gap = t[pos[q] + 1:pos[q + 1]]
+            if (q + 1 - i) in starts:
+                if g > 12:
+                    return False
+            elif g > 3 or any(c.isspace() for c in gap):
+                return False
+        name = typ in ("PERSON", "FAMILY", "ORG")
+        if strict:
+            word_first = [sk[i + n] for n in starts]
+            letters = sk[i:j]
+            if not all(c.isupper() for c in word_first if c.isalpha()):
+                return False
+            if not caps and any(c.isalpha() for c in letters) and letters.upper() == letters:
+                return False
+        if name:
+            a, b = pos[i], pos[j - 1] + 1
+            if "/" in t[max(0, a - 1):b + 1] and in_fs_path(t, a, b):
+                return False
+            surf = t[a:b]
+            if "," in surf and self._comma_words(surf, key):
+                return False
+        return True
+
+    def _is_name(self, k):
+        return self.known.get(self.alias.get(k, k), ("", "PERSON"))[1] in ("PERSON", "FAMILY", "ORG")
 
     def _comma_words(self, surface, k):
         """True for a lower-case name hit whose comma sits between ordinary words ("say grace, lee side"): a comma
@@ -1215,7 +1414,7 @@ class Scrubber:
         """how many known-value hits in text were left alone because they sit inside a filesystem path."""
         if not text or "/" not in text:
             return 0
-        return sum(1 for s, e, _k in self.known_m.find(text) if in_fs_path(text, s, e))
+        return sum(1 for s, e, k in self.known_m.find(text) if self._is_name(k) and in_fs_path(text, s, e))
 
     # request -------------------------------------------------------
     SKIP_KEYS = {"model", "role", "type", "tool_call_id", "id", "tool_choice", "response_format", "stop", "format",
@@ -1283,7 +1482,9 @@ class Scrubber:
             v = self.rev.get(ph)
         if v is None:
             return None
-        return json.dumps(v, ensure_ascii=False)[1:-1] if js else v
+        for _ in range(int(js)):                     # js: JSON string levels to escape for (True = 1)
+            v = json.dumps(v, ensure_ascii=False)[1:-1]
+        return v
 
     def restore_text(self, text, js=False, stats=None, forms=None, jstate=None):
         """placeholders -> values. With the request's Forms, each variant comes back exactly as it was written;
@@ -1297,10 +1498,13 @@ class Scrubber:
             jst = (jstate.copy() if jstate is not None else JsonStrState())
 
             def val(ph, pos, cur):
-                return self._val(ph, jst.inside_at(cur, pos), forms)
+                return self._val(ph, jst.depth_at(cur, pos), forms)
         else:
-            def val(ph, pos, cur):
-                return self._val(ph, True, forms)
+            def val(ph, pos, cur):                  # tool-call arguments: one level, more inside nested JSON strings
+                if "\\" not in cur:
+                    return self._val(ph, 1, forms)
+                st = JsonStrState()
+                return self._val(ph, max(1, st.depth_at(cur, pos)), forms)
 
         def rep(m):
             v = val(m.group(0), m.start(), text)
@@ -1384,14 +1588,14 @@ _BARE_FULL = re.compile(r"(?:" + "|".join(TYPES) + r")_\d+")
 class JsonStrState:
     """whether a position in a reply sits inside a string of a JSON document. A reply is a JSON document when its first
     non-blank character is { or [; anything else is prose and nothing is escaped. Scans forward only."""
-    __slots__ = ("doc", "ins", "esc", "src", "pos")
+    __slots__ = ("doc", "ins", "esc", "src", "pos", "sbuf")
 
     def __init__(self):
-        self.doc, self.ins, self.esc, self.src, self.pos = None, False, False, None, 0
+        self.doc, self.ins, self.esc, self.src, self.pos, self.sbuf = None, False, False, None, 0, []
 
     def copy(self):
         o = JsonStrState()
-        o.doc, o.ins, o.esc = self.doc, self.ins, self.esc
+        o.doc, o.ins, o.esc, o.sbuf = self.doc, self.ins, self.esc, list(self.sbuf)
         return o
 
     def feed(self, s, a=0, b=None):
@@ -1406,13 +1610,18 @@ class JsonStrState:
                         return
             elif self.esc:
                 self.esc = False
+                self.sbuf.append(c)
             elif self.ins:
                 if c == "\\":
                     self.esc = True
+                    self.sbuf.append(c)
                 elif c == '"':
                     self.ins = False
+                    self.sbuf = []
+                else:
+                    self.sbuf.append(c)
             elif c == '"':
-                self.ins = True
+                self.ins, self.sbuf = True, []
             i += 1
 
     def inside_at(self, s, pos):
@@ -1423,6 +1632,29 @@ class JsonStrState:
             self.feed(s, self.pos, pos)
         self.pos = max(self.pos, pos)
         return bool(self.doc) and self.ins
+
+    def depth_at(self, s, pos):
+        """how many JSON string levels a value written at s[pos] sits in: 0 outside any string, 1 inside a string of
+        this document, 2 when that string's content is itself a JSON document and the position is inside one of its
+        strings (json.dumps of json.dumps), and so on (up to 4)."""
+        if not self.inside_at(s, pos):
+            return 0
+        return 1 + _inner_depth("".join(self.sbuf), 3)
+
+
+def _inner_depth(raw, left):
+    """JSON string levels at the end of raw, the escaped content of a JSON string read so far."""
+    if left <= 0 or not raw:
+        return 0
+    try:
+        txt = json.loads('"' + raw + '"')
+    except ValueError:
+        return 0
+    st = JsonStrState()
+    st.feed(txt)
+    if not (st.doc and st.ins):
+        return 0
+    return 1 + _inner_depth("".join(st.sbuf), left - 1)
 
 
 class StreamRestorer:
@@ -2084,7 +2316,24 @@ def cli_parser():
     return ap
 
 
+def _quiet_pipe():
+    """stdout went away (`swapback --help | head`): exit quietly, as other command-line tools do."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+    except (OSError, ValueError):
+        pass
+    sys.exit(0)
+
+
 def main(argv=None):
+    try:
+        _main(argv)
+    except BrokenPipeError:
+        _quiet_pipe()
+
+
+def _main(argv=None):
     argv = sys.argv if argv is None else argv
     args = cli_parser().parse_args(argv[1:])          # --help/--version/bad input exit here, before any config load
     cmd = args.cmd or "stats"
@@ -2114,7 +2363,7 @@ def main(argv=None):
 def _run_cmd(cmd, cfg, args):
     if cmd == "stats":
         s = Scrubber(cfg)
-        print(json.dumps({"mode": cfg["mode"], "known": len(s.known), "private_rules": len(s.private),
+        print(json.dumps({"mode": cfg["mode"], "known": s.known_count(), "private_rules": len(s.private),
                           "vault": len(s.rev), "ctr": s.ctr}))
     elif cmd == "check-config":
         out = {"mode": cfg["mode"], "listen": cfg["listen"], "upstream": cfg["upstream"], "state_dir": state_dir(cfg)}

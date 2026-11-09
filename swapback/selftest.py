@@ -44,6 +44,8 @@ NEGATIVES = [
     "Bell curves are common.", "Park the idea for now.", "She drew wells for three villages.",
     "Drew wells before the dry season?", "The gene pool is small here.", "Gene pool size matters.",
     "We say grace, park the bikes, then eat.", "Wells, drew a crowd at noon.",
+    "WILL HUNT FOR CLUES TONIGHT", "DREW WELLS ACROSS THE VALLEY", "GENE POOL PARTY AT NOON", "ROSE MARSH TRAIL CLOSED",
+    "MARK BELL SCHEDULE: MONDAY", "GRACE PARK OPENS AT 9",
 ]
 UNLISTED = {"EMAIL": ["oskar.lindqvist@example.com"], "PHONE": ["(206) 555-0161", "+44 20 7946 0321"],
             "CARD": ["4111 1111 1111 1111"], "IBAN": ["DE89 3704 0044 0532 0130 00"], "SSN": ["536-22-1874"],
@@ -67,15 +69,24 @@ def _ascii(v):
 
 def forms(v, t):
     """the written forms a value is sent in."""
-    out = [v, v.upper()] if t in ("PERSON", "EMAIL", "ADDRESS") else [v]
+    from .core import _is_common_phrase, _phone_core
+    # ALL-CAPS of a name made of dictionary words ("WILL HUNT") is a heading, not a name: not swapped by default
+    upper = t in ("EMAIL", "ADDRESS") or (t == "PERSON" and not _is_common_phrase(v))
+    out = [v, v.upper()] if upper else [v]
     if t == "PERSON":
         w = v.split()
         out.append(w[-1] + ", " + " ".join(w[:-1]))
         if _fold(v) != v.lower():
             out.append(_ascii(v))
+        if "-" in v:                                 # a hyphen written as a space or as nothing, also surname first
+            sp = v.replace("-", " ")
+            out += [sp, v.replace("-", ""), " ".join(sp.split()[1:]) + " " + sp.split()[0]]
     if t == "PHONE":
         d = re.sub(r"\D", "", v)
+        core = _phone_core(v) or d
         out += [("+" + d) if v.startswith("+") else d, re.sub(r"[ ]", "-", v)]
+        # letters glued on (an extension, a label) and a phone in a URL path with no host
+        out += [re.sub(r"[ ]", "-", v) + "x22", v + "ext9", core + "abc", "Mob" + core, "/u/%s/profile" % core]
     if t == "ID":
         out.append(re.sub(r"[\s.\-]", "", v))
     if t == "ADDRESS":
@@ -392,6 +403,53 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                     for s in ("Please note: %s." % fm, json.dumps({"contact": fm}), json.dumps(json.dumps({"q": fm}))):
                         res["egress_forms"] += 1
                         res["egress_caught"] += chk.leftover_known(s) > 0
+        # the skeleton layer of the re-check on its own (no matcher rules at all): letters and digits only
+        res["skeleton_forms"] = res["skeleton_caught"] = 0
+        for t, vals in listed.items():
+            for v in vals:
+                for fm in forms(v, t):
+                    for s in ("Please note: %s." % fm, json.dumps({"contact": fm})):
+                        res["skeleton_forms"] += 1
+                        res["skeleton_caught"] += bool(chk.skeleton_hits(s))
+        res["skeleton_false"] = sum(bool(chk.skeleton_hits(n)) for n in negatives)
+        # a multi-line value restored inside JSON inside JSON (json.dumps of json.dumps) keeps both levels valid
+        res["nested_json"] = res["nested_json_ok"] = 0
+        for t, vals in listed.items():
+            for v in vals:
+                if " " not in v:
+                    continue
+                ml = v.replace(" ", "\n", 1)
+                for doc in (json.dumps({"body": json.dumps({"note": "re: " + ml})}),
+                            json.dumps({"a": json.dumps({"b": json.dumps({"note": ml})})})):
+                    res["nested_json"] += 1
+                    fo = c.Forms()
+                    sc = chk.scrub_text(doc, forms=fo)
+                    back = chk.restore_text(sc, forms=fo)
+                    try:
+                        o = json.loads(back)
+                        while isinstance(o, dict) and "note" not in o:
+                            o = json.loads(next(iter(o.values())))
+                        res["nested_json_ok"] += sc != doc and o["note"].endswith(ml)
+                    except (ValueError, StopIteration, KeyError, TypeError):
+                        pass
+        # health while running: the list file deleted, then broken, must read blocked (ok false), then ok again
+        kp = os.path.join(d, "known.yaml")
+        good = open(kp, encoding="utf-8").read()
+
+        def hstat():
+            with urllib.request.urlopen(base + "/scrubber/health", timeout=10) as r:
+                h = json.loads(r.read().decode())
+            return h.get("ok"), h.get("status")
+        res["health_checks"], res["health_ok"] = 4, 0
+        res["health_ok"] += hstat() == (True, "ok")
+        os.remove(kp)
+        res["health_ok"] += hstat() == (False, "blocked")
+        with open(kp, "w", encoding="utf-8") as f:
+            f.write("PERSON: [unclosed\n")
+        res["health_ok"] += hstat() == (False, "blocked")
+        with open(kp, "w", encoding="utf-8") as f:
+            f.write(good)
+        res["health_ok"] += hstat() == (True, "ok")
         for n in negatives:
             code, seen, back = send("chat", n, "nothing here")
             if code == 200 and seen is not None and seen["messages"][-1]["content"] == n and back == n:
@@ -407,6 +465,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
         res["pass"] = (res["leaked_forms"] == 0 and res["round_trip_exact"] == res["round_trips"]
                        and res["decoded_round_trip_same"] == res["decoded_round_trips"]
                        and res["egress_caught"] == res["egress_forms"]
+                       and res["nested_json_ok"] == res["nested_json"] and res["health_ok"] == res["health_checks"]
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
             print(json.dumps(res, ensure_ascii=False), file=out)
@@ -419,8 +478,12 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             if res["blocked"]:
                 print("  requests blocked (fail-closed, nothing sent):     %d" % res["blocked"], file=out)
             print("  egress re-check alone (swap off) sees the form:   " + pct(res["egress_caught"], res["egress_forms"]), file=out)
+            print("  skeleton layer alone (no matcher rules) sees it:  " + pct(res["skeleton_caught"], res["skeleton_forms"])
+                  + "  (reported; ordinary sentences it flags: %d)" % res["skeleton_false"], file=out)
             print("  ordinary sentences left untouched:                " + pct(res["negatives_untouched"], res["negatives"]), file=out)
             print("  exact round trips:                                " + pct(res["round_trip_exact"], res["round_trips"]), file=out)
+            print("  JSON-in-JSON multi-line restores, valid + exact:  " + pct(res["nested_json_ok"], res["nested_json"]), file=out)
+            print("  health blocked when the list file breaks mid-run: " + pct(res["health_ok"], res["health_checks"]), file=out)
             if res["decoded_round_trips"]:
                 print("  %XX-encoded forms back as the same value, decoded: " + pct(res["decoded_round_trip_same"],
                                                                                  res["decoded_round_trips"]), file=out)
