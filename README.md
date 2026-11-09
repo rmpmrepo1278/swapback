@@ -251,6 +251,25 @@ never listed (PasteGuard, Maskit and Veil's NER), more APIs and streaming format
 
 ## Limits
 
+### What it doesn't catch yet
+
+Checked against 0.2.1 with nothing listed in `known.yaml`:
+
+- **Names you haven't listed.** There is no NER model, so "Priya Raman" in free text goes out as written.
+- **Dates of birth, unless right after an English label.** `Date of birth: 14/03/1987`, `DOB 1987-03-14` and
+  `born on March 14, 1987` are caught. `Birthdate`, `DOB = …`, `born 21 March 1981`, other languages and unlabelled
+  dates are not.
+- **National IDs other than the US SSN.** UK National Insurance, Canadian SIN, Indian Aadhaar and PAN, passport and
+  driving licence numbers pass through.
+- **Most addresses outside the US street format.** A "number, street name, suffix" line is caught (`10 Downing Street`);
+  postcodes, cities, PO boxes and formats like `Calle Mayor 5` or `12 rue de Rivoli` are not.
+- **Free-form secrets and other identifiers.** Passwords, recovery codes, medical record numbers and coordinates are
+  missed unless a rule covers them.
+- **OpenAI Responses API streams.** Streamed `/v1/responses` replies keep their placeholders. Non-streaming replies
+  are restored.
+
+Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The details:
+
 - **No NER.** It swaps what you list and what the patterns match. A name you never listed, written in free text, goes
   out as written. Keep the known-values file current.
 - **Pattern coverage is what the rules cover.** Phone numbers, emails, cards (Luhn), IBANs, US SSNs, IPs, profile URLs,
@@ -301,7 +320,7 @@ what the scrubber finds on its own. A case counts as caught only if every charac
 These numbers are not tuned to the holdout; the 0.1.1 rules are generic (bracketed at/dot emails, full-width `＠` and
 zero-width characters in emails, IPv6).
 
-| Category | 0.1.0 | 0.1.1 |
+| Category | 0.1.0 | 0.1.1 to 0.2.1 |
 |---|---|---|
 | EMAIL | 1/5 | 5/5 |
 | IP address | 2/4 | 4/4 |

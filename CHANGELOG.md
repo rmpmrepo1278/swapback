@@ -11,6 +11,14 @@ All notable changes to this project are documented here. The format follows
   (`SWAPBACK_LISTEN` or `listen:`), and points to `swapback check-config` and `swapback health`.
   `swapback COMMAND --help` describes each command.
 
+### Changed
+- README: a short "What it doesn't catch yet" list at the top of Limits, checked against this release (unlisted names,
+  most date-of-birth forms, non-US national IDs, most non-US addresses, free-form secrets, Responses API streams).
+- SECURITY.md: 0.2.x is the supported line, and reporters without the private-report button are asked to open an
+  issue requesting a private contact, with no details.
+- CI: `actions/checkout@v7` and `actions/setup-python@v7` (Node 24), so the runs no longer print the Node 20
+  deprecation warning.
+
 ### Fixed
 - `swapback-proxy --help`, or any other argument, started the proxy on 127.0.0.1:8787. Help and version now print and
   exit without loading the config or opening a port; an unknown option or argument prints the usage and exits with

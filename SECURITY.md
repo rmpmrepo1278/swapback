@@ -8,7 +8,8 @@ another context.
 
 | Version | Supported |
 |---|---|
-| 0.1.x | Yes |
+| 0.2.x | Yes |
+| 0.1.x (as pii-scrubber) | No |
 
 ## Reporting a vulnerability
 
@@ -16,6 +17,8 @@ Please report privately, not in a public issue:
 
 1. Go to the repository's **Security** tab and choose **Report a vulnerability** (GitHub private vulnerability
    reporting).
+   If the button is not there yet (it appears once private reporting is switched on for the public repository),
+   open a public issue that only asks for a private contact, with no details of the problem.
 2. Include the version or commit, your config with **synthetic values only**, a minimal request body that reproduces it,
    and what reached the upstream (the mock upstream in `examples/mock_upstream.py` records it in `mock_seen.jsonl`).
 
@@ -27,5 +30,5 @@ you in the changelog unless you prefer not to be named.
 ## Scope notes
 
 Documented limits are not vulnerabilities on their own: names that were never listed (there is no NER), formats no
-pattern covers, non-OpenAI streaming formats, and non-JSON bodies. A case where the code does not do what the README says
+pattern covers, streaming formats the README does not list as restored (such as OpenAI Responses API streams), and non-JSON bodies. A case where the code does not do what the README says
 it does is in scope.
