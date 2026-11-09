@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "swapback"
-version = "0.4.2"
+version = "0.4.3"
 description = "Local proxy that swaps personal data for placeholders before an LLM call and restores it byte-exact in the reply. Fails closed. OpenAI-compatible."
 readme = "README.md"
 license = "MIT"
@@ -51,7 +51,7 @@ swapback-proxy = "swapback.proxy:main"
 packages = ["swapback", "swapback.vendor", "swapback.vendor.gitleaks", "swapback.vendor.presidio"]
 
 [tool.setuptools.package-data]
-"swapback" = ["examples/*.yaml"]
+"swapback" = ["examples/*.yaml", "data/*.gz"]
 "swapback.vendor" = ["*.toml", "*.md"]
 "swapback.vendor.gitleaks" = ["*"]
 "swapback.vendor.presidio" = ["*"]

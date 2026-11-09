@@ -296,7 +296,8 @@ def test_selftest_passes_and_prints_numbers(capsys):
     assert e.value.code == 0
     r = json.loads(capsys.readouterr().out)
     assert r["pass"] and r["leaked_forms"] == 0 and r["listed_caught"] == r["listed_values"] >= 30
-    assert r["round_trip_exact"] == r["round_trips"] == r["requests"] and r["paths"] == 7
+    assert r["round_trip_exact"] == r["round_trips"] and r["paths"] == 7
+    assert r["round_trips"] + r["decoded_round_trips"] == r["requests"]
     assert r["negatives_untouched"] == r["negatives"] >= 40
 
 

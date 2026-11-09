@@ -478,7 +478,12 @@ def cli_parser():
 def main(argv=None):
     argv = sys.argv if argv is None else argv
     cli_parser().parse_args(argv[1:])            # --help/--version/unknown flags exit here; no config load, no port
-    srv = make_server()
+    try:
+        srv = make_server()
+    except S.ScrubError as e:                    # a missing/broken known file at startup: one readable line, no traceback
+        print("swapback: error: %s. Fix the path in your config (or run `swapback init`), then start again." % e,
+              file=sys.stderr, flush=True)
+        sys.exit(2)
     h, p = srv.server_address[:2]
     print(json.dumps({"listening": "%s:%s" % (h, p), "mode": CFG["mode"], "known": len(SCR.known),
                       "private_rules": len(SCR.private), "upstream": "%s://%s" % (UP.scheme, UP.netloc),

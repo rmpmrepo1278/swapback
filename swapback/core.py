@@ -207,16 +207,20 @@ def _canon(v):
     return _SEP_RE.sub(" ", v.strip().lower()).strip()
 
 
+# Matching (not the vault key) also takes '+' (a space in URL query strings and HTML form bodies: ?q=Jane+Doe) and '/'
+# ("Jane/Doe") between the words.
+MATCH_SEP_RX = r"(?:[\s\u200b\u200c\u200d\u2060\ufeff._\-+/]|%20)+"
+
 # Inside a listed multi-word value that is not a name (an address, an org): commas and semicolons also separate the
 # parts, so "17 Example Mews, Dublin" also matches the same address written over two lines or without the comma.
-LOOSE_SEP_RX = r"(?:[\s\u200b\u200c\u200d\u2060\ufeff._\-,;]|%20)+"
+LOOSE_SEP_RX = r"(?:[\s\u200b\u200c\u200d\u2060\ufeff._\-+/,;]|%20)+"
 
 
 def _variant_rx(key, loose=False):
     """regex for a known multi-word value in any separator/case variant, with the matcher's whole-word edges.
     loose: commas and semicolons count as separators too (addresses and other non-name values)."""
     words = [w for w in re.split(r"[\s,;]+", key) if w] if loose else key.split(" ")
-    sep = LOOSE_SEP_RX if loose else SEP_RX
+    sep = LOOSE_SEP_RX if loose else MATCH_SEP_RX
     return re.compile(r"(?<![\w@.])" + sep.join(re.escape(w) for w in words) + r"(?![\w@])", re.I)
 
 
@@ -316,6 +320,63 @@ def decoded_views(text, depth=3):
     return views
 
 
+# A value can also be written so that it looks different but reads the same: accents in decomposed form (NFD: "e" +
+# U+0301, common in macOS file names and some PDFs), zero-width characters inside a word ("Jo\u200bhn"), fullwidth
+# digits and letters ("\uff10\uff14\uff19\uff18"). Matching and the egress re-check both also look at a normalized view: NFC,
+# zero-width characters removed, fullwidth ASCII folded. Base64 and other re-encodings are out of scope.
+_ZW = frozenset("\u200b\u200c\u200d\u2060\ufeff\u00ad\u180e")
+_NORM_HINT = re.compile("[\u200b\u200c\u200d\u2060\ufeff\u00ad\u180e\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff"
+                        "\ufe20-\ufe2f\uff01-\uff5e\u3000\u3099\u309a]")
+
+
+def _normalize(text):
+    """(normalized, starts) like _decode_once: NFC per base character + its combining marks, zero-width removed,
+    fullwidth ASCII (U+FF01-FF5E) and the ideographic space folded."""
+    import unicodedata
+    out, starts, i, n = [], [], 0, len(text)
+    comb = unicodedata.combining
+    while i < n:
+        c = text[i]
+        if c in _ZW:
+            i += 1
+            continue
+        o = ord(c)
+        if 0xFF01 <= o <= 0xFF5E or o == 0x3000:
+            out.append(chr(o - 0xFEE0) if o != 0x3000 else " ")
+            starts.append(i)
+            i += 1
+            continue
+        j = i + 1
+        while j < n and (comb(text[j]) or text[j] in _ZW):
+            j += 1
+        piece = unicodedata.normalize("NFC", "".join(x for x in text[i:j] if x not in _ZW)) if j > i + 1 else c
+        for ch in piece:
+            out.append(ch)
+            starts.append(i)
+        i = j
+    starts.append(n)
+    return "".join(out), starts
+
+
+def match_views(text):
+    """[(view, index map back to text, surface(s, e))]: the normalized text, each decoded view (decoded_views) and each
+    decoded view normalized. surface: the spelling a hit at view[s:e] is restored as — None when the view is only a
+    normalization of the text as written (the written span itself comes back, byte-exact), else the decoded spelling
+    before normalization."""
+    views = []
+    if _NORM_HINT.search(text):
+        d, st = _normalize(text)
+        if d != text:
+            views.append((d, st, lambda s, e: None))
+    for d, m in decoded_views(text):
+        views.append((d, m, lambda s, e, d=d: d[s:e]))
+        if _NORM_HINT.search(d):
+            nd, st = _normalize(d)
+            if nd != d:
+                views.append((nd, [m[j] for j in st], lambda s, e, d=d, st=st: d[st[s]:st[e]]))
+    return views
+
+
 class Forms:
     """per-request record of the surface form behind each placeholder, in order of occurrence. Variants of one value
     share a placeholder; restore with the same Forms puts back the form that was written (occurrence by occurrence,
@@ -407,9 +468,15 @@ def _phone_variants(p):
 _ID_TYPES = ("ID", "SSN", "ACCOUNT", "CARD", "IBAN", "ORDER")
 
 
+# letters NFKD does not split into a base letter + accent, written the usual ASCII way
+_TRANSLIT = str.maketrans({"\u00f8": "o", "\u00d8": "O", "\u0142": "l", "\u0141": "L", "\u0111": "d", "\u0110": "D",
+                           "\u00e6": "ae", "\u00c6": "Ae", "\u0153": "oe", "\u0152": "Oe", "\u00df": "ss", "\u00fe": "th",
+                           "\u00de": "Th", "\u0131": "i", "\u00f0": "d", "\u00d0": "D"})
+
+
 def _strip_accents(v):
     import unicodedata
-    return "".join(c for c in unicodedata.normalize("NFKD", v) if not unicodedata.combining(c))
+    return "".join(c for c in unicodedata.normalize("NFKD", v.translate(_TRANSLIT)) if not unicodedata.combining(c))
 
 
 def extra_variants(v, t):
@@ -460,6 +527,8 @@ def load_known(path):
     try:
         with open(path, encoding="utf-8") as f:
             d = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        raise ScrubError("configured file is missing: %s" % os.path.basename(path)) from None
     except Exception as e:
         raise ScrubError("known_file unreadable: %s" % type(e).__name__) from None
     if isinstance(d, dict) and "known" in d:
@@ -532,9 +601,33 @@ def _dedupe(hits):
     return out
 
 
+_WORDS = None
+
+
+def dictionary_words():
+    """lower-case English words (SCOWL size 50, the list Debian ships as wamerican; see THIRD_PARTY_NOTICES.md),
+    plus the common-name words above. Loaded once, on first use."""
+    global _WORDS
+    if _WORDS is None:
+        import gzip
+        try:
+            with gzip.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "words.txt.gz"), "rt",
+                           encoding="utf-8") as f:
+                _WORDS = frozenset(f.read().split()) | _COMMON
+        except OSError:
+            _WORDS = _COMMON
+    return _WORDS
+
+
 def _is_common_phrase(v):
+    """a listed name made only of ordinary words: a single word from the common-name list ("Rose"), or several words
+    that are all dictionary words ("Drew Wells", "Jack Frost", "Bill Gates"; one-letter initials do not count)."""
     w = re.findall(r"[^\W\d_]+", v.lower())
-    return bool(w) and all(x in _COMMON for x in w)
+    if len(w) == 1:
+        return w[0] in _COMMON
+    long = [x for x in w if len(x) > 1]
+    words = dictionary_words() if long else _COMMON
+    return bool(long) and all(x in words for x in long)
 
 
 def known_warnings(path, pairs=None, title_case=True):
@@ -675,11 +768,11 @@ _DOMAIN_HEAD = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?::
 def in_fs_path(text, s, e):
     """True when text[s:e] is a whole segment of a POSIX-looking path token."""
     seg = text[s:e]
-    if not seg or any(c in _PATH_STOP or c == "/" for c in seg):
+    if not seg or any(c in _PATH_STOP for c in seg) or seg.startswith("/") or seg.endswith("/"):
         return False
     before = text[s - 1] if s else ""
     after = text[e] if e < len(text) else ""
-    if before != "/" and after != "/":
+    if before != "/" and after != "/" and "/" not in seg:
         return False
     a, b, n = s, e, len(text)
     while a > 0 and text[a - 1] not in _PATH_STOP:
@@ -816,7 +909,7 @@ class Scrubber:
             acc, best = "", None
             plus = text[max(0, s0 - 2):s0].endswith(("+", "+("))       # a country code may lead the digits
             for j in range(i, len(g)):
-                if j > i and not re.fullmatch(r"[ \t\u00a0.\-()/]{1,3}", text[g[j - 1][1]:g[j][0]]):
+                if j > i and not re.fullmatch(r"[ \t\u00a0.\-()/+]{1,3}", text[g[j - 1][1]:g[j][0]]):
                     break
                 acc += g[j][2]
                 if len(acc) > top:
@@ -1063,8 +1156,8 @@ class Scrubber:
     def _private_hits_full(self, text, low=None):
         """[(start, end, TYPE, surface)] private-term hits in text and in its decoded views, mapped back to text."""
         hits = list(self._private_hits(text, low))
-        for d, m in decoded_views(text):
-            hits += [(m[s], m[e], t, v) for s, e, t, v in self._private_hits(d)]
+        for d, m, surf in match_views(text):
+            hits += [(m[s], m[e], t, surf(s, e) or text[m[s]:m[e]]) for s, e, t, v in self._private_hits(d)]
         return _dedupe(hits)
 
     def _known_hits(self, text, low=None):
@@ -1075,8 +1168,8 @@ class Scrubber:
         """[(start, end, key, decoded surface or None)]: hits in text as written, then hits in each decoded view
         mapped back to the escaped span they came from (surface: the decoded spelling, kept for the restore)."""
         hits = [(s, e, k, None) for s, e, k in self._known_hits_raw(text, low)]
-        for d, m in decoded_views(text):
-            hits += [(m[s], m[e], k, d[s:e]) for s, e, k in self._known_hits_raw(d)]
+        for d, m, surf in match_views(text):        # plain normalization: the written span itself is restored (exact)
+            hits += [(m[s], m[e], k, surf(s, e)) for s, e, k in self._known_hits_raw(d)]
         return _dedupe(hits)
 
     def _known_hits_raw(self, text, low=None):
@@ -1102,7 +1195,21 @@ class Scrubber:
             hits = [h for h in hits if not in_fs_path(text, h[0], h[1])]
         if hits and self.strict:
             hits = [h for h in hits if self.alias.get(h[2], h[2]) not in self.strict or _title_case(text[h[0]:h[1]])]
+        if hits and "," in text and self.cfg.get("common_names_title_case", True):
+            hits = [h for h in hits if not self._comma_words(text[h[0]:h[1]], h[2])]
         return hits
+
+    def _comma_words(self, surface, k):
+        """True for a lower-case name hit whose comma sits between ordinary words ("say grace, lee side"): a comma
+        separates "Lee, Grace" only when the words are written as a name."""
+        if "," not in surface or _title_case(surface):
+            return False
+        if self.known.get(self.alias.get(k, k), ("", "PERSON"))[1] not in ("PERSON", "FAMILY", "ORG"):
+            return False
+        a, _, b = surface.partition(",")
+        wa, wb = re.findall(r"[^\W\d_]+", a.lower())[-1:], re.findall(r"[^\W\d_]+", b.lower())[:1]
+        words = dictionary_words()
+        return bool(wa and wb) and all(x in words or x in _COMMON for x in wa + wb)
 
     def path_kept(self, text):
         """how many known-value hits in text were left alone because they sit inside a filesystem path."""
@@ -1178,14 +1285,25 @@ class Scrubber:
             return None
         return json.dumps(v, ensure_ascii=False)[1:-1] if js else v
 
-    def restore_text(self, text, js=False, stats=None, forms=None):
+    def restore_text(self, text, js=False, stats=None, forms=None, jstate=None):
         """placeholders -> values. With the request's Forms, each variant comes back exactly as it was written;
-        without, the vault's spelling (for a known value, as written in the known file)."""
+        without, the vault's spelling (for a known value, as written in the known file).
+        A reply that is a JSON document (JSON mode, structured output): a value restored inside one of its strings is
+        JSON-escaped (quotes, backslashes, newlines and other control characters; "é" stays as it is), so a multi-line
+        address keeps the JSON valid. jstate: a JsonStrState carried across stream chunks (StreamRestorer)."""
         if not text or ("_" not in text):
             return text
+        if not js:
+            jst = (jstate.copy() if jstate is not None else JsonStrState())
+
+            def val(ph, pos, cur):
+                return self._val(ph, jst.inside_at(cur, pos), forms)
+        else:
+            def val(ph, pos, cur):
+                return self._val(ph, True, forms)
 
         def rep(m):
-            v = self._val(m.group(0), js, forms)
+            v = val(m.group(0), m.start(), text)
             if v is None:
                 if stats is not None:
                     stats["unknown"] = stats.get("unknown", 0) + 1
@@ -1194,6 +1312,8 @@ class Scrubber:
                 stats["restored"] = stats.get("restored", 0) + 1
             return v
         text = PH_RE.sub(rep, text)
+        if not js:
+            jst = (jstate.copy() if jstate is not None else JsonStrState())
         if js and "\\u00" in text:
             def rep_js(m):
                 v = self._val(f"{L}{m.group(1)}_{m.group(2)}{R}", True, forms)
@@ -1204,9 +1324,13 @@ class Scrubber:
                 return v
             text = JS_PH_RE.sub(rep_js, text)
         if self.cfg.get("restore_bare", True):
+            cur2 = text
+            if not js:
+                jst = (jstate.copy() if jstate is not None else JsonStrState())
+
             def rep2(m):
                 ph = f"{L}{m.group(1)}_{m.group(2)}{R}"
-                v = self._val(ph, js, forms)
+                v = val(ph, m.start(), cur2)
                 if v is None:
                     return m.group(0)
                 if stats is not None:
@@ -1257,11 +1381,56 @@ _TYPE_PREFIXES = {(t + "_")[:i] for t in TYPES for i in range(1, len(t) + 2)}
 _BARE_FULL = re.compile(r"(?:" + "|".join(TYPES) + r")_\d+")
 
 
+class JsonStrState:
+    """whether a position in a reply sits inside a string of a JSON document. A reply is a JSON document when its first
+    non-blank character is { or [; anything else is prose and nothing is escaped. Scans forward only."""
+    __slots__ = ("doc", "ins", "esc", "src", "pos")
+
+    def __init__(self):
+        self.doc, self.ins, self.esc, self.src, self.pos = None, False, False, None, 0
+
+    def copy(self):
+        o = JsonStrState()
+        o.doc, o.ins, o.esc = self.doc, self.ins, self.esc
+        return o
+
+    def feed(self, s, a=0, b=None):
+        b = len(s) if b is None else b
+        i = a
+        while i < b and self.doc is not False:
+            c = s[i]
+            if self.doc is None:
+                if not c.isspace():
+                    self.doc = c in "{["
+                    if not self.doc:
+                        return
+            elif self.esc:
+                self.esc = False
+            elif self.ins:
+                if c == "\\":
+                    self.esc = True
+                elif c == '"':
+                    self.ins = False
+            elif c == '"':
+                self.ins = True
+            i += 1
+
+    def inside_at(self, s, pos):
+        """inside a JSON string at s[pos] (positions asked in increasing order on the same s)."""
+        if self.src is not s:
+            self.src, self.pos = s, 0
+        if self.doc is not False:
+            self.feed(s, self.pos, pos)
+        self.pos = max(self.pos, pos)
+        return bool(self.doc) and self.ins
+
+
 class StreamRestorer:
     """feed(chunk) -> text safe to emit now; a tail that may be a split placeholder waits for the next chunk."""
 
     def __init__(self, scr, js=False, stats=None, forms=None):
         self.s, self.js, self.stats, self.buf, self.forms = scr, js, stats, "", forms
+        self.jstate = JsonStrState()
 
     def _cut(self, b):
         if self.js:                                 # JSON text may carry the placeholder escaped: \u00abPERSON_1\u00bb
@@ -1293,11 +1462,17 @@ class StreamRestorer:
         b = self.buf + chunk
         cut = self._cut(b)
         self.buf = b[cut:]
-        return self.s.restore_text(b[:cut], self.js, self.stats, self.forms)
+        return self._out(b[:cut])
+
+    def _out(self, b):
+        out = self.s.restore_text(b, self.js, self.stats, self.forms, None if self.js else self.jstate)
+        if not self.js and self.jstate.doc is not False:
+            self.jstate.feed(out)
+        return out
 
     def flush(self):
         b, self.buf = self.buf, ""
-        return self.s.restore_text(b, self.js, self.stats, self.forms)
+        return self._out(b)
 
 
 # ---------------------------------------------------------------- tool-call restore policy
@@ -1929,6 +2104,14 @@ def main(argv=None):
             kcfg = dict(DEFAULTS)
         sys.exit(known.run(args, kcfg))
     cfg = load_cfg()
+    try:
+        _run_cmd(cmd, cfg, args)
+    except ScrubError as e:                           # missing or broken known/private file: one line, no traceback
+        print("swapback: error: %s" % e, file=sys.stderr)
+        sys.exit(2)
+
+
+def _run_cmd(cmd, cfg, args):
     if cmd == "stats":
         s = Scrubber(cfg)
         print(json.dumps({"mode": cfg["mode"], "known": len(s.known), "private_rules": len(s.private),
@@ -1979,7 +2162,9 @@ def main(argv=None):
         s.scrub_request(body, counts)
         print(json.dumps({"counts": counts, "ms": round((time.perf_counter() - t0) * 1000, 2)}))
     elif cmd == "health":
-        print(json.dumps(health(cfg)))
+        h = health(cfg)
+        print(json.dumps(h))
+        sys.exit(0 if h.get("ok") else 1)             # not ok (blocked, warning, unreachable): non-zero for scripts
     elif cmd == "canary":
         r = canary(cfg)
         print(json.dumps(r))

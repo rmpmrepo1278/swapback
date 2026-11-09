@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 LISTED = {
     "PERSON": ["Mireille Ch\u00e2teau-Dufresne", "Bj\u00f6rn \u00c5kesson", "Zo\u00eb Papadakis", "Tom\u00e1s \u00d3 Briain",
                "Luc\u00eda Fern\u00e1ndez Ortega", "Adaeze Okonkwo", "Haruto Kiyomizu", "Priyanka Venkataraman",
-               "Dmitri Volkonsky", "Will Hunt", "Grace Park", "Rose Marsh", "Mark Bell"],
+               "Dmitri Volkonsky", "Will Hunt", "Grace Park", "Rose Marsh", "Mark Bell", "Drew Wells", "Gene Pool"],
     "EMAIL": ["mireille.cd@example.net", "bjorn.akesson@example.org", "z.papadakis@mail.example", "hkiyomizu@example.jp"],
     "PHONE": ["+1 503 555 0147", "(617) 555-0188", "+91 98450 12873", "07700 900417", "+61 491 570 006",
               "+49 30 90182047", "+33 6 12 34 56 78"],
@@ -41,7 +41,9 @@ NEGATIVES = [
     "Salt &amp; pepper on the side.", "See https://example.com/a%20b for details.", "Version v3 beats v2 by 12%.",
     "Lunch for 12 people at noon.", "The bus line 42 runs late.", "Chapter 7, page 213, line 4.",
     "Grace periods last 30 days.", "Will you review the PR?", "Mark it as done.", "The Rose Bowl is in January.",
-    "Bell curves are common.", "Park the idea for now.",
+    "Bell curves are common.", "Park the idea for now.", "She drew wells for three villages.",
+    "Drew wells before the dry season?", "The gene pool is small here.", "Gene pool size matters.",
+    "We say grace, park the bikes, then eat.", "Wells, drew a crowd at noon.",
 ]
 UNLISTED = {"EMAIL": ["oskar.lindqvist@example.com"], "PHONE": ["(206) 555-0161", "+44 20 7946 0321"],
             "CARD": ["4111 1111 1111 1111"], "IBAN": ["DE89 3704 0044 0532 0130 00"], "SSN": ["536-22-1874"],
@@ -49,10 +51,18 @@ UNLISTED = {"EMAIL": ["oskar.lindqvist@example.com"], "PHONE": ["(206) 555-0161"
 PATHS = ["chat", "chat_stream", "chat_tools", "anthropic_stream", "anthropic_tools", "responses_stream", "responses_tools"]
 
 
+_ZW = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff\u00ad"))
+
+
 def _fold(s):
-    s = unicodedata.normalize("NFKD", s)
+    s = unicodedata.normalize("NFKD", s.translate(_ZW))
     s = "".join(c for c in s if not unicodedata.combining(c))
     return s.translate({0xf8: "o", 0xd8: "O", 0x131: "i"}).lower()
+
+
+def _ascii(v):
+    from .core import _strip_accents
+    return _strip_accents(v).encode("ascii", "ignore").decode()
 
 
 def forms(v, t):
@@ -62,7 +72,7 @@ def forms(v, t):
         w = v.split()
         out.append(w[-1] + ", " + " ".join(w[:-1]))
         if _fold(v) != v.lower():
-            out.append(unicodedata.normalize("NFKD", v).encode("ascii", "ignore").decode())
+            out.append(_ascii(v))
     if t == "PHONE":
         d = re.sub(r"\D", "", v)
         out += [("+" + d) if v.startswith("+") else d, re.sub(r"[ ]", "-", v)]
@@ -70,12 +80,40 @@ def forms(v, t):
         out.append(re.sub(r"[\s.\-]", "", v))
     if t == "ADDRESS":
         out.append(v.replace(", ", "\n", 1))
+    out += encoded_forms(v, t)
     seen, res = set(), []
     for x in out:
         if x not in seen:
             seen.add(x)
             res.append(x)
     return res
+
+
+_FW = {c: chr(ord(c) + 0xFEE0) for c in "0123456789+()-"}
+
+
+def encoded_forms(v, t):
+    """the same value as a URL / form body writes it (quote_plus: spaces as '+'), with decomposed accents (NFD), with a
+    zero-width space inside a word, and (phones, IDs) in fullwidth digits."""
+    out = []
+    if " " in v:
+        out.append(urllib.parse.quote_plus(v))
+        out.append(v.replace(" ", "/", 1) if t == "PERSON" else v.replace(" ", "+"))
+    nfd = unicodedata.normalize("NFD", v)
+    if nfd != v:
+        out.append(nfd)
+    w = v.split(" ")[0] if t != "EMAIL" else v.split("@")[0]
+    if len(w) >= 4 and not any(ch.isdigit() for ch in w[:3]):
+        i = v.index(w) + 2
+        out.append(v[:i] + "\u200b" + v[i:])
+    if t in ("PHONE", "ID") and any(ch.isdigit() for ch in v):
+        out.append("".join(_FW.get(ch, ch) for ch in v))
+    return out
+
+
+def is_escaped_form(fm):
+    """a form whose restore comes back decoded (%XX): the same value, in its plain spelling."""
+    return bool(re.search(r"%[0-9A-Fa-f]{2}", fm))
 
 
 def _needles(v, t):
@@ -100,7 +138,7 @@ def _decodings(s, depth=3):
     for _ in range(depth):
         nxt = []
         for x in cur:
-            for f in (html.unescape, urllib.parse.unquote,
+            for f in (html.unescape, urllib.parse.unquote, urllib.parse.unquote_plus,
                       lambda y: re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), y),
                       lambda y: re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), y),
                       lambda y: y.replace("\\n", "\n").replace('\\"', '"')):
@@ -142,7 +180,7 @@ def leaked(body, v, t):
             f = _fold(s)
             for kind, n in _needles(v, t):
                 if kind == "words":
-                    sep = re.sub(r"[\s.\-_,]+", " ", f)
+                    sep = re.sub(r"[\s.\-_,+/]+", " ", f)
                     toks = sep.split()
                     for i in range(len(toks)):
                         if tuple(toks[i:i + len(n)]) == n or tuple(toks[i:i + len(n)]) == n[-1:] + n[:-1]:
@@ -151,7 +189,7 @@ def leaked(body, v, t):
                     if n in re.sub(r"\s+", " ", f.replace(",", " ")).replace("  ", " ") or n in f:
                         return True
                 elif kind == "digits":
-                    if n and n in re.sub(r"(?<=\d)[\s().\-/]+(?=\d)", "", s):
+                    if n and n in re.sub(r"(?<=\d)[\s().\-/+]+(?=\d)", "", _fold(s)):
                         return True
                 elif kind == "alnum":
                     if n and n in re.sub(r"[^0-9a-z]", "", f):
@@ -315,7 +353,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             return 200, (_Model.seen[0] if _Model.seen else None), _reply_text(raw, path)
 
         res = {"listed_values": 0, "listed_caught": 0, "forms": 0, "requests": 0, "leaked_forms": 0, "blocked": 0,
-               "round_trip_exact": 0, "round_trips": 0, "negatives": len(negatives), "negatives_untouched": 0,
+               "round_trip_exact": 0, "round_trips": 0, "decoded_round_trips": 0, "decoded_round_trip_same": 0, "negatives": len(negatives), "negatives_untouched": 0,
                "unlisted": 0, "unlisted_caught": 0, "paths": len(PATHS), "leaks": []}
         for t, vals in listed.items():
             for v in vals:
@@ -334,9 +372,26 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                             res["leaked_forms"] += 1
                             clean = False
                             res["leaks"].append({"type": t, "path": path, "form": "#%d" % forms(v, t).index(fm)})
+                        if is_escaped_form(fm):      # %XX comes back as the plain spelling: same value, not same bytes
+                            res["decoded_round_trips"] += 1
+                            res["decoded_round_trip_same"] += back == "Please note: %s." % urllib.parse.unquote(fm)
+                            continue
                         res["round_trips"] += 1
                         res["round_trip_exact"] += back == text
+                        if back != text and len(res.setdefault("round_trip_misses", [])) < 10:
+                            res["round_trip_misses"].append({"type": t, "path": path, "form": "#%d" % forms(v, t).index(fm)})
                 res["listed_caught"] += clean
+        # the egress re-check on its own (the swap switched off): every form, as text and as a json.dumps tool result,
+        # must be seen by it, so a form the swap missed would be blocked rather than sent
+        chk = c.Scrubber(dict(c.DEFAULTS, mode="on", state_dir=os.path.join(d, "chk")),
+                         known=[(v, t) for t, vals in listed.items() for v in vals])
+        res["egress_forms"] = res["egress_caught"] = 0
+        for t, vals in listed.items():
+            for v in vals:
+                for fm in forms(v, t):
+                    for s in ("Please note: %s." % fm, json.dumps({"contact": fm}), json.dumps(json.dumps({"q": fm}))):
+                        res["egress_forms"] += 1
+                        res["egress_caught"] += chk.leftover_known(s) > 0
         for n in negatives:
             code, seen, back = send("chat", n, "nothing here")
             if code == 200 and seen is not None and seen["messages"][-1]["content"] == n and back == n:
@@ -350,6 +405,8 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                     res["unlisted_caught"] += 1
         res["seconds"] = round(time.time() - t0, 1)
         res["pass"] = (res["leaked_forms"] == 0 and res["round_trip_exact"] == res["round_trips"]
+                       and res["decoded_round_trip_same"] == res["decoded_round_trips"]
+                       and res["egress_caught"] == res["egress_forms"]
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
             print(json.dumps(res, ensure_ascii=False), file=out)
@@ -361,8 +418,12 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             print("  forms leaked to the model:                        %d of %d sent" % (res["leaked_forms"], res["requests"]), file=out)
             if res["blocked"]:
                 print("  requests blocked (fail-closed, nothing sent):     %d" % res["blocked"], file=out)
+            print("  egress re-check alone (swap off) sees the form:   " + pct(res["egress_caught"], res["egress_forms"]), file=out)
             print("  ordinary sentences left untouched:                " + pct(res["negatives_untouched"], res["negatives"]), file=out)
             print("  exact round trips:                                " + pct(res["round_trip_exact"], res["round_trips"]), file=out)
+            if res["decoded_round_trips"]:
+                print("  %XX-encoded forms back as the same value, decoded: " + pct(res["decoded_round_trip_same"],
+                                                                                 res["decoded_round_trips"]), file=out)
             print("  unlisted values caught by the pattern detectors:  " + pct(res["unlisted_caught"], res["unlisted"])
                   + "  (reported, not a pass condition; names are never caught without a list)", file=out)
             for lk in res["leaks"][:10]:

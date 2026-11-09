@@ -899,7 +899,7 @@ def test_variant_in_unscrubbed_field_is_blocked(sc2):
 
 
 @pytest.mark.parametrize("text", [
-    "Jane went to the Testperson museum", "Janet Testpersonal", "Jane,Testperson", "Jane/Testperson notes",
+    "Jane went to the Testperson museum", "Janet Testpersonal", "Jane,Testperson",
     "the quick brown fox jumps over the lazy dog", "a well-known re.match_case e-mail of 20%", "jane", "testperson",
     "x_Jane_Testperson_y", "Jane.Testpersons", "mail.Jane.Testperson"])
 def test_variants_no_false_positives(sc2, text):

@@ -3,6 +3,45 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] - 2026-11-09
+
+Fixes from independent review #3 against the launch bar.
+
+### Security
+- **Listed values leaked when spaces were written as `+`** (URL query strings and HTML form bodies, `?q=Jane+Doe`,
+  what Python's `urllib.parse.quote_plus` writes), in plain text, tool results and tool-call arguments, and the egress
+  re-check missed them too. `+` and `/` now separate the words of a listed value in matching and in the re-check
+  (`%2B`/`%2F` are decoded first), and `+` may join the digit groups of a listed phone.
+- **Decomposed accents (NFD), zero-width characters inside a word and fullwidth digits or letters** are now matched:
+  matching and the egress re-check also read a normalized view of every string, and of every decoded view (NFC,
+  zero-width characters removed, fullwidth ASCII folded). Hits map back to the span as written; plain-text forms still
+  round-trip byte for byte.
+- Accent-free variants now also transliterate letters NFKD does not split (`ø`→`o`, `ł`→`l`, `æ`→`ae`, `ß`→`ss`, ...).
+
+### Fixed
+- **A value restored inside a JSON reply broke the JSON** (a multi-line address in JSON mode came back with a raw
+  newline inside a string). In a reply that is a JSON document (first character `{` or `[`), a value restored inside a
+  string is JSON-escaped: quotes, backslashes and control characters (`é` stays as it is). Works across stream chunks.
+- **Ordinary sentences no longer trip names made of dictionary words.** Title-Case-only matching (0.4.2) now covers any
+  listed name of two or more words that are all English dictionary words ("Drew Wells", "Jack Frost", "Gene Pool"),
+  using a shipped word list (SCOWL size 50, 64k words, gzipped), not just the short common-phrase list. A comma between
+  two ordinary lower-case words ("say grace, lee side") no longer joins a surname-first name.
+  `common_names_title_case: false` still matches them in any case.
+- A missing or unreadable known file at startup prints one line (`swapback: error: configured file is missing: …`) and
+  exits 2, with no traceback (`swapback-proxy`, `swapback stats`, `check-config`, `scrub-file`).
+- `swapback health` exits 1 when the proxy is not ok (blocked, warning, unreachable).
+
+### Changed
+- `"Jane/Doe"` now matches a listed "Jane Doe" (it was treated as two names). A listed name that spans several
+  segments of a filesystem path (`/home/jane/doe/…`) is still left alone.
+- `swapback selftest` adds the encoded forms (`quote_plus`, `+`/`/`, NFD, zero-width, fullwidth), two dictionary-word
+  names with traps, and an egress-only pass (swap switched off: the re-check must see every form). `%XX`-encoded forms
+  are scored as "back as the same value, decoded" rather than byte-exact. 0.4.3: 33/33 caught, 0 of 1,281 forms leaked,
+  549/549 seen by the re-check alone, 51/51 sentences untouched, 1,183/1,183 exact round trips.
+- README: positioning and the comparison table corrected against Veil's current README (Veil also keeps real values
+  from unknown and network tools, fails closed with a second guard, and has a transform-bypass suite); encodings
+  covered and out of scope listed exactly; why the tool default stays `restore`.
+
 ## [0.4.2] - 2026-11-09
 
 Fixes from an independent re-review against the launch bar.
