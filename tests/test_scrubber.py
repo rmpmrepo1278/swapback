@@ -178,24 +178,17 @@ def test_vault_file_private(sc):
 
 
 # ------------------------------------------------------------ proxy end to end (fake upstream)
-def _free_port():
-    x = socket.socket()
-    x.bind(("127.0.0.1", 0))
-    p = x.getsockname()[1]
-    x.close()
-    return p
-
-
 class _Up(http.server.BaseHTTPRequestHandler):
+    """mock upstream, never served directly: _mock_upstream() subclasses it with a list of its own."""
     protocol_version = "HTTP/1.1"
-    seen = []
+    seen = None
 
     def log_message(self, *a):
         pass
 
     def do_POST(self):
         b = self.rfile.read(int(self.headers["Content-Length"]))
-        _Up.seen.append(b.decode("utf-8", "replace"))
+        self.seen.append(b.decode("utf-8", "replace"))
         try:
             j = json.loads(b)
         except ValueError:
@@ -282,30 +275,89 @@ def anthropic_fixture(p, e):
     ]
 
 
+def _mock_upstream():
+    """a mock upstream on a port the kernel picks at bind time, with its own list of received bodies.
+    Returns (server, seen)."""
+    seen = []
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), type("_UpOne", (_Up,), {"seen": seen}))
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, seen
+
+
+class _Proxy(tuple):
+    """(px, cfgp, tmp_path), plus .seen (the bodies THIS test's mock upstream received) and .up (its port)."""
+
+
+def _listening_port(p, errp, deadline):
+    """the port the proxy bound, read from the JSON line it prints at start. It listens on port 0, so there is no
+    pick-a-free-port-then-bind race (the Nov 8 CI flake: the proxy port came back equal to the mock's port)."""
+    import selectors
+    sel = selectors.DefaultSelector()
+    sel.register(p.stdout, selectors.EVENT_READ)
+    try:
+        while time.time() < deadline and p.poll() is None:
+            if not sel.select(timeout=0.2):
+                continue
+            line = p.stdout.readline()
+            if not line:
+                break
+            try:
+                info = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(info, dict) and "listening" in info:
+                return int(str(info["listening"]).rsplit(":", 1)[1])
+    finally:
+        sel.close()
+    pytest.fail("proxy did not start (rc=%s): %s" % (p.poll(), errp.read_text(errors="replace")[-800:]))
+
+
 @pytest.fixture
 def proxy(tmp_path):
-    up = _free_port()
-    px = _free_port()
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", up), _Up)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    srv, seen = _mock_upstream()
+    up = srv.server_address[1]
     cfgp = tmp_path / "pii-scrubber.yaml"
     st = tmp_path / "st"
     st.mkdir()
     (tmp_path / "known.json").write_text(json.dumps({"known": [list(x) for x in KNOWN]}))
-    cfgp.write_text("mode: \"on\"\nlisten: 127.0.0.1:%d\nupstream: http://127.0.0.1:%d\nstate_dir: %s\n"
-                    "known_file: known.json\n" % (px, up, st))
+    cfgp.write_text("mode: \"on\"\nlisten: 127.0.0.1:0\nupstream: http://127.0.0.1:%d\nstate_dir: %s\n"
+                    "known_file: known.json\n" % (up, st))
     env = dict(os.environ, PII_SCRUBBER_CONFIG=str(cfgp))
-    p = subprocess.Popen([sys.executable, "-B", "-m", "pii_scrubber.proxy"], env=env,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(200):
-        try:
-            urllib.request.urlopen("http://127.0.0.1:%d/scrubber/health" % px, timeout=1)
-            break
-        except Exception:
+    errp = tmp_path / "proxy.stderr"
+    with open(errp, "wb") as ef:
+        p = subprocess.Popen([sys.executable, "-B", "-m", "pii_scrubber.proxy"], env=env,
+                             stdout=subprocess.PIPE, stderr=ef)
+    try:
+        px = _listening_port(p, errp, time.time() + 60)
+        threading.Thread(target=p.stdout.read, daemon=True).start()        # keep draining so the proxy never blocks
+        assert px != up
+        ok = False
+        for _ in range(400):                       # it must be OUR proxy answering on px, not anything else
+            if p.poll() is not None:
+                break
+            try:
+                h = json.loads(urllib.request.urlopen("http://127.0.0.1:%d/scrubber/health" % px, timeout=2).read())
+                ok = isinstance(h, dict) and "ok" in h
+            except Exception:
+                pass
+            if ok:
+                break
             time.sleep(0.05)
-    yield px, cfgp, tmp_path
-    p.kill()
-    srv.shutdown()
+        if not ok:
+            pytest.fail("proxy never answered its health check (rc=%s): %s"
+                        % (p.poll(), errp.read_text(errors="replace")[-800:]))
+        info = _Proxy((px, cfgp, tmp_path))
+        info.seen, info.up = seen, up
+        yield info
+    finally:
+        p.kill()
+        try:
+            p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        srv.shutdown()
+        srv.server_close()
 
 
 def _post(px, body):
@@ -317,24 +369,24 @@ def _post(px, body):
 
 def test_proxy_non_stream_and_stream(proxy):
     px, _, _ = proxy
-    _Up.seen.clear()
+    proxy.seen.clear()
     code, out = _post(px, {"model": "m", "messages": [{"role": "user", "content": "say Jane Q Doe"}]})
     assert code == 200 and json.loads(out)["choices"][0]["message"]["content"] == "ok Jane Q Doe"
     code, out = _post(px, {"model": "m", "stream": True, "messages": [{"role": "user", "content": "say Ozzie Pellam"}]})
     text = "".join(json.loads(l[6:])["choices"][0]["delta"].get("content", "") for l in out.splitlines()
                    if l.startswith("data: {"))
     assert text == "ok Ozzie Pellam done"
-    assert all("Jane" not in b and "Ozzie" not in b for b in _Up.seen)
+    assert all("Jane" not in b and "Ozzie" not in b for b in proxy.seen)
 
 
 def test_proxy_fail_closed_blocks(proxy):
     px, cfgp, st = proxy
-    _Up.seen.clear()
+    proxy.seen.clear()
     (st / "known.json").write_text("{not json")                   # a broken known file must not let data out
     os.utime(st / "known.json", None)
     with pytest.raises(urllib.error.HTTPError) as e:
         _post(px, {"model": "m", "messages": [{"role": "user", "content": "say Jane Q Doe"}]})
-    assert e.value.code == 503 and _Up.seen == []
+    assert e.value.code == 503 and proxy.seen == []
 
 
 def test_system_note_appended_once(sc):
@@ -600,42 +652,42 @@ CHAT = json.dumps({"model": "m", "messages": [{"role": "user", "content": "say J
                                    "application/x-www-form-urlencoded"])
 def test_proxy_scrubs_json_under_any_content_type(proxy, ctype):
     px, _, _ = proxy
-    _Up.seen.clear()
+    proxy.seen.clear()
     h = {"Content-Length": str(len(CHAT))}
     if ctype:
         h["Content-Type"] = ctype
     code, out = _raw(px, "/v1/chat/completions", CHAT, h)
     assert code == 200 and json.loads(out)["choices"][0]["message"]["content"] == "ok Jane Q Doe"
-    assert len(_Up.seen) == 1 and "Jane" not in _Up.seen[0] and "PERSON_" in _Up.seen[0]
+    assert len(proxy.seen) == 1 and "Jane" not in proxy.seen[0] and "PERSON_" in proxy.seen[0]
 
 
 @pytest.mark.parametrize("phone", FAKE_PHONES)
 def test_proxy_phone_round_trip_text_plain(proxy, phone):
     px, _, _ = proxy
-    _Up.seen.clear()
+    proxy.seen.clear()
     b = json.dumps({"model": "m", "messages": [{"role": "user", "content": "call " + phone}]}).encode()
     code, out = _raw(px, "/v1/chat/completions", b, {"Content-Type": "text/plain", "Content-Length": str(len(b))})
     assert code == 200 and json.loads(out)["choices"][0]["message"]["content"] == "ok " + phone   # as written
-    assert "555" not in _Up.seen[0]
+    assert "555" not in proxy.seen[0]
 
 
 @pytest.mark.parametrize("path,key", [("/v1/embeddings", "input"), ("/v1/completions", "prompt")])
 @pytest.mark.parametrize("ctype", ["application/json", "text/plain", None])
 def test_proxy_embeddings_and_completions_scrubbed(proxy, path, key, ctype):
     px, _, _ = proxy
-    _Up.seen.clear()
+    proxy.seen.clear()
     b = json.dumps({"model": "m", key: "notes on Jane Q Doe, jdoe@corp.example, " + FAKE_PHONES[0]}).encode()
     h = {"Content-Length": str(len(b))}
     if ctype:
         h["Content-Type"] = ctype
     code, out = _raw(px, path, b, h)
     assert code == 200
-    assert not any(v in _Up.seen[0] for v in ("Jane", "jdoe@", "555"))
+    assert not any(v in proxy.seen[0] for v in ("Jane", "jdoe@", "555"))
     assert json.loads(out)["echo"] == json.loads(b)[key]          # restored exactly
     b2 = json.dumps({"model": "m", key: [[101, 2023, 102]]}).encode()
-    _Up.seen.clear()
+    proxy.seen.clear()
     code, _ = _raw(px, path, b2, {"Content-Type": "application/json", "Content-Length": str(len(b2))})
-    assert code == 503 and _Up.seen == []
+    assert code == 503 and proxy.seen == []
 
 
 @pytest.mark.parametrize("data,extra", [(b"hello Jane Q Doe", {"Content-Type": "text/plain"}),
@@ -646,20 +698,20 @@ def test_proxy_embeddings_and_completions_scrubbed(proxy, path, key, ctype):
 def test_proxy_unreadable_body_on_model_endpoint_fails_closed(proxy, data, extra):
     import gzip
     px, _, _ = proxy
-    _Up.seen.clear()
+    proxy.seen.clear()
     data = gzip.compress(CHAT) if data is None else data
     code, _ = _raw(px, "/v1/chat/completions", data, dict(extra, **{"Content-Length": str(len(data))}))
-    assert code == 503 and _Up.seen == []
+    assert code == 503 and proxy.seen == []
 
 
 def test_proxy_non_json_off_model_path_passes(proxy):
     px, _, _ = proxy
-    _Up.seen.clear()
+    proxy.seen.clear()
     code, _ = _raw(px, "/other/upload", b"plain words", {"Content-Type": "text/plain", "Content-Length": "11"})
-    assert code == 200 and _Up.seen == ["plain words"]
+    assert code == 200 and proxy.seen == ["plain words"]
     b = json.dumps({"note": "Jane Q Doe"}).encode()              # JSON off the model path is still scrubbed
     code, _ = _raw(px, "/other/upload", b, {"Content-Type": "text/plain", "Content-Length": str(len(b))})
-    assert code == 200 and "Jane" not in _Up.seen[-1]
+    assert code == 200 and "Jane" not in proxy.seen[-1]
 
 
 
@@ -743,11 +795,11 @@ def test_private_term_variants(tmp_path):
 def test_proxy_variant_round_trip(proxy):
     px, _, _ = proxy
     for v in ("JANE.Q.DOE", "Jane\u00a0Q\u00a0Doe", "jane%20q%20doe"):
-        _Up.seen.clear()
+        proxy.seen.clear()
         b = json.dumps({"model": "m", "messages": [{"role": "user", "content": "say " + v}]}, ensure_ascii=False).encode()
         code, out = _raw(px, "/v1/chat/completions", b, {"Content-Type": "application/json", "Content-Length": str(len(b))})
         assert code == 200 and json.loads(out)["choices"][0]["message"]["content"] == "ok " + v
-        assert "PERSON_1" in _Up.seen[0] and "doe" not in _Up.seen[0].lower()
+        assert "PERSON_1" in proxy.seen[0] and "doe" not in proxy.seen[0].lower()
 
 
 # Anthropic /v1/messages streams
@@ -829,13 +881,13 @@ def _sse_events(raw):
 
 def test_proxy_anthropic_stream_restored(proxy):
     px, _, _ = proxy
-    _Up.seen.clear()
+    proxy.seen.clear()
     b = json.dumps({"model": "m", "stream": True, "max_tokens": 50, "messages": [
         {"role": "user", "content": "write to Jane Q Doe at jdoe@corp.example"}]}).encode()
     code, out = _raw(px, "/v1/messages", b, {"Content-Type": "application/json", "Content-Length": str(len(b)),
                                               "anthropic-version": "2023-06-01"})
     assert code == 200
-    assert "Jane" not in _Up.seen[0] and "jdoe" not in _Up.seen[0]
+    assert "Jane" not in proxy.seen[0] and "jdoe" not in proxy.seen[0]
     evs = _sse_events(out)
     text, js, _ = _anth_collect(evs)
     assert text == "Hi Jane Q Doe, writing to you now Jane Q Doe"
@@ -884,3 +936,52 @@ def test_tool_json_escaped_placeholder_split_every_position(sc):
             evs = [{"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": x}}
                    for x in (args[:i], args[i:j], args[j:])] + [{"type": "content_block_stop", "index": 1}]
             assert json.loads(_anth_collect(_anth_run(sc, evs))[1]) == json.loads(want)
+
+
+# ---- Nov 9 2026: the 3.13 CI flake was the test harness, not the proxy. Pin both down. ----
+def test_mock_upstreams_are_isolated():
+    a, sa = _mock_upstream()
+    b, sb = _mock_upstream()
+    try:
+        assert a.server_address[1] != b.server_address[1]
+        d = json.dumps({"model": "m", "prompt": "only for a"}).encode()
+        urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%d/v1/completions" % a.server_address[1],
+                                                      data=d, method="POST"), timeout=10).read()
+        assert sa == [d.decode()] and sb == []
+    finally:
+        for srv in (a, b):
+            srv.shutdown()
+            srv.server_close()
+
+
+def test_proxy_fixture_is_really_the_proxy(proxy):
+    px, _, _ = proxy
+    assert px != proxy.up
+    h = json.loads(urllib.request.urlopen("http://127.0.0.1:%d/scrubber/health" % px, timeout=5).read())
+    assert "ok" in h and proxy.seen == []
+
+
+PROMPTS = ["notes on Jane Q Doe, jdoe@corp.example, " + FAKE_PHONES[0],
+           ["notes on Jane Q Doe", "mail jdoe@corp.example", "call " + FAKE_PHONES[0]],
+           [["Jane Q Doe wrote"], ["to jdoe@corp.example"]]]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("prompt", PROMPTS, ids=["str", "list", "nested"])
+def test_proxy_completions_prompt_every_shape_scrubbed(proxy, prompt, stream):
+    """/v1/completions prompt as a string, a list of strings and nested lists, streamed or not: nothing raw leaves."""
+    px, _, _ = proxy
+    b = json.dumps({"model": "m", "stream": stream, "prompt": prompt}).encode()
+    code, out = _raw(px, "/v1/completions", b, {"Content-Type": "application/json", "Content-Length": str(len(b))})
+    assert code == 200 and len(proxy.seen) == 1
+    assert not any(v in proxy.seen[0] for v in ("Jane", "jdoe@", "555")) and "PERSON_" in proxy.seen[0]
+    assert json.loads(out)["echo"] == prompt
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("prompt", [[5, 6], [[101, 2023, 102]], 7, ["Jane Q Doe", [5, 6]]])
+def test_proxy_completions_token_ids_blocked(proxy, prompt, stream):
+    px, _, _ = proxy
+    b = json.dumps({"model": "m", "stream": stream, "prompt": prompt}).encode()
+    code, _ = _raw(px, "/v1/completions", b, {"Content-Type": "application/json", "Content-Length": str(len(b))})
+    assert code == 503 and proxy.seen == []

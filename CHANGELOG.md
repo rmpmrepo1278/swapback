@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased] - 0.1.1
 
 ### Fixed
+- **Flaky proxy test (CI, Python 3.13).** The proxy tests picked two "free" ports by binding and releasing them, and the kernel can hand the same port back twice (4 in 100,000 tries on Linux). When the proxy's port equalled the mock upstream's, the proxy could not start and the test talked to the mock directly, which looked like a leak. Each test now gets its own mock upstream on a kernel-picked port with its own list of received requests, the proxy listens on port 0 and reports its port, and the fixture fails loudly unless the scrubber itself answers. The proxy code was not at fault; new tests pin every `/v1/completions` prompt shape (string, list, nested, token ids; streamed or not).
 - **Anthropic Messages streams are restored.** `/v1/messages` SSE replies get their placeholders swapped back delta by
   delta (`text_delta`, and `input_json_delta` for `tool_use` input), including a placeholder split across deltas; held
   text is flushed before its `content_block_stop`. Before, agents in Anthropic mode showed `«PERSON_1»` in replies.
