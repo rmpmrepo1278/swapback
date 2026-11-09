@@ -1,9 +1,9 @@
-"""pii_scrubber.proxy: a small HTTP proxy in front of any OpenAI-compatible endpoint. JSON request bodies are scrubbed
-(pii_scrubber.core) before they leave and responses (plain JSON or SSE streams) are restored on the way back. Paths,
+"""swapback.proxy: a small HTTP proxy in front of any OpenAI-compatible endpoint. JSON request bodies are scrubbed
+(swapback.core) before they leave and responses (plain JSON or SSE streams) are restored on the way back. Paths,
 headers and models pass through unchanged. Fail closed: a scrub error answers 503 and nothing is forwarded. Logs
 counts and types only. OpenAI chat-completion chunks and Anthropic /v1/messages events are both restored in streams.
 GET /scrubber/health -> {"ok": ...}. Request header X-Scrubber-Raw: 1 returns the provider's
-answer without the swap-back (used by `pii-scrubber canary` to prove what the provider saw)."""
+answer without the swap-back (used by `swapback canary` to prove what the provider saw)."""
 import copy, http.client, json, os, socket, sys, threading, time, urllib.parse
 _NOJSON = object()
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -60,7 +60,7 @@ def _alert_async(text):
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     disable_nagle_algorithm = True
-    server_version = "scrub-proxy/1"
+    server_version = "swapback/1"
 
     def log_message(self, *a):
         pass
@@ -145,7 +145,7 @@ class H(BaseHTTPRequestHandler):
                     STATE["last_error"] = msg[:120]
                     _alert_async("blocked a model request (fail-closed): " + msg[:120] + ". See requests.jsonl in the "
                                  "state dir.")
-                    return self._send_json(503, {"error": {"message": "pii scrubber blocked this request (fail-closed): "
+                    return self._send_json(503, {"error": {"message": "swapback blocked this request (fail-closed): "
                                                            + msg[:120], "type": "scrubber_error", "code": 503}})
                 out = body
             rec["swaps"] = counts
@@ -171,7 +171,7 @@ class H(BaseHTTPRequestHandler):
             _log(rec)
             if c is not None:
                 c.close()
-            return self._send_json(502, {"error": {"message": "pii scrubber: upstream unreachable",
+            return self._send_json(502, {"error": {"message": "swapback: upstream unreachable",
                                                    "type": "upstream_error"}})
         ctype = r.getheader("Content-Type") or ""
         restore = swapped and not raw

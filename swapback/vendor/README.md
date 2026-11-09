@@ -8,7 +8,7 @@
   recognizers. Their validation logic (Luhn, IBAN checksum, SSN invalidation) is ported in detect.py; Presidio's email
   domain check (tldextract) is replaced by an alphabetic-TLD check.
 - Refresh: `pip download --no-deps presidio-analyzer==X` then
-  `python tools/build_vendor.py <wheel> > pii_scrubber/vendor/presidio/patterns.json`.
+  `python tools/build_vendor.py <wheel> > swapback/vendor/presidio/patterns.json`.
 
 ## gitleaks/gitleaks.toml: gitleaks default rules
 - Source: https://raw.githubusercontent.com/gitleaks/gitleaks/v8.30.1/config/gitleaks.toml (tag v8.30.1), MIT license

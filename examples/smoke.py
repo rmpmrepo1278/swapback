@@ -36,13 +36,13 @@ def main():
     up, px = port(), port()
     with open(os.path.join(d, "known.yaml"), "w") as f:
         f.write("PERSON: [%s]\n" % NAME)
-    with open(os.path.join(d, "pii-scrubber.yaml"), "w") as f:
+    with open(os.path.join(d, "swapback.yaml"), "w") as f:
         f.write("mode: \"on\"\nlisten: 127.0.0.1:%d\nupstream: http://127.0.0.1:%d\nknown_file: known.yaml\n"
                 "state_dir: state\n" % (px, up))
     seen = os.path.join(d, "seen.jsonl")
     m = subprocess.Popen([sys.executable, os.path.join(HERE, "mock_upstream.py"), str(up)], env=dict(os.environ, MOCK_SEEN=seen))
-    p = subprocess.Popen([sys.executable, "-m", "pii_scrubber.proxy"],
-                         env=dict(os.environ, PII_SCRUBBER_CONFIG=os.path.join(d, "pii-scrubber.yaml")))
+    p = subprocess.Popen([sys.executable, "-m", "swapback.proxy"],
+                         env=dict(os.environ, SWAPBACK_CONFIG=os.path.join(d, "swapback.yaml")))
     try:
         wait("http://127.0.0.1:%d/scrubber/health" % px)
         msg = "Please call %s at %s tomorrow." % (NAME, PHONE)

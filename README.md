@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="pii-scrubber: keep personal data out of LLM requests, restore it byte-exact in the reply" width="100%">
+  <img src="docs/assets/banner.svg" alt="swapback: keep personal data out of LLM requests, restore it byte-exact in the reply" width="100%">
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg" alt="Python 3.11 | 3.12 | 3.13">
-  <a href="https://github.com/rmpmrepo1278/pii-scrubber/actions/workflows/tests.yml"><img src="https://github.com/rmpmrepo1278/pii-scrubber/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+  <a href="https://github.com/rmpmrepo1278/swapback/actions/workflows/tests.yml"><img src="https://github.com/rmpmrepo1278/swapback/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
   <img src="https://img.shields.io/badge/dependencies-3-brightgreen.svg" alt="3 dependencies">
 </p>
 
@@ -18,7 +18,7 @@
 Agents and chat apps send everything to the model provider: names, emails, phone numbers, account numbers, API keys
 pasted into a log. Most of the time the model does not need the real value, only a stable stand-in for it.
 
-`pii-scrubber` sits on loopback between your client and an OpenAI-compatible API. It replaces the values you list and
+`swapback` sits on loopback between your client and an OpenAI-compatible API. It replaces the values you list and
 the patterns it detects with placeholders like `«PERSON_1»`, forwards the request, and puts the exact original text back
 into the answer, including streamed answers and tool-call arguments. If anything goes wrong while scrubbing, the request
 is blocked, not sent.
@@ -37,11 +37,11 @@ Needs Python 3.11 or newer. This runs the proxy in front of a bundled mock LLM t
 both sides.
 
 ```bash
-git clone https://github.com/rmpmrepo1278/pii-scrubber.git && cd pii-scrubber
+git clone https://github.com/rmpmrepo1278/swapback.git && cd swapback
 python3 -m venv .venv && . .venv/bin/activate && pip install -e .
 
 python examples/mock_upstream.py 8009 &                            # fake LLM on :8009
-PII_SCRUBBER_CONFIG=examples/quickstart.yaml pii-scrubber-proxy &  # proxy on :8787
+SWAPBACK_CONFIG=examples/quickstart.yaml swapback-proxy &  # proxy on :8787
 sh examples/curl_demo.sh
 ```
 
@@ -63,12 +63,12 @@ Stop both with `kill %1 %2`.
 ### Set it up for a real provider
 
 ```bash
-cp pii-scrubber.example.yaml pii-scrubber.yaml
+cp swapback.example.yaml swapback.yaml
 cp known.example.yaml known.yaml                    # then EDIT it: your names, emails, phones (see Configuration)
 cp private_terms.example.yaml private_terms.yaml    # optional: codenames and money figures
 ```
 
-In `pii-scrubber.yaml`:
+In `swapback.yaml`:
 
 ```yaml
 upstream: https://api.openai.com      # a base URL WITHOUT /v1: the proxy appends the client's own path
@@ -80,8 +80,8 @@ Edit `known.yaml` **before** you start the proxy. The example values are fake, a
 missing blocks every request (`503`, fail-closed). Then:
 
 ```bash
-pii-scrubber check-config     # counts per type, never values
-pii-scrubber-proxy            # listens on 127.0.0.1:8787
+swapback check-config     # counts per type, never values
+swapback-proxy            # listens on 127.0.0.1:8787
 ```
 
 Point your client at the proxy. It keeps its usual path; only the host changes:
@@ -106,10 +106,10 @@ scrubbed chat in a few minutes; replies, streamed replies and tool calls came ba
 // OpenClaw config (openclaw.json)
 {
   models: { providers: { scrub: {
-    baseUrl: "http://127.0.0.1:8787/v1",   // pii-scrubber
+    baseUrl: "http://127.0.0.1:8787/v1",   // swapback
     apiKey: "${PROVIDER_API_KEY}",         // your provider key; the proxy forwards it unchanged
     api: "openai-completions",
-    models: [{ id: "your-model", name: "your-model via pii-scrubber", reasoning: false, input: ["text"],
+    models: [{ id: "your-model", name: "your-model via swapback", reasoning: false, input: ["text"],
                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
   } } },
   agents: { defaults: { model: { primary: "scrub/your-model" } } },
@@ -126,21 +126,21 @@ end to end with OpenClaw against a mock Anthropic upstream, not yet against a li
 about a minute and then says it couldn't connect to the AI service. The reason is not shown in the agent. To see it:
 
 ```bash
-pii-scrubber health                          # mode, counters, last_error
-tail -n 5 ~/.local/state/pii-scrubber/requests.jsonl   # one line per request: status, blocked, error, swap counts
+swapback health                          # mode, counters, last_error
+tail -n 5 ~/.local/state/swapback/requests.jsonl   # one line per request: status, blocked, error, swap counts
 ```
 
 The usual causes are a missing or broken `known_file` / `private_terms_file`, a non-JSON or compressed body on a model
 endpoint, or a known value still present after the swap.
 
 **Check what the provider saw.** `requests.jsonl` records counts and types, never the text. To prove the provider got
-placeholders only, run `pii-scrubber canary` (set `canary_model` first): it sends a fake name and email through the
+placeholders only, run `swapback canary` (set `canary_model` first): it sends a fake name and email through the
 running proxy, checks the provider's raw answer (`X-Scrubber-Raw: 1`) for the fake values and checks the restored answer
 for them. `python examples/smoke.py` runs the same check offline against the mock upstream.
 
 ## How it works
 
-<p align="center"><img src="docs/assets/architecture.svg" alt="Architecture: app or agent, then pii-scrubber, then the LLM API, with the restore path back" width="100%"></p>
+<p align="center"><img src="docs/assets/architecture.svg" alt="Architecture: app or agent, then swapback, then the LLM API, with the restore path back" width="100%"></p>
 
 1. **Swap.** Every string in the JSON request body is scanned. Values from your known-values file are matched as whole
    words, case-insensitively, in their common written variants (a phone number also matches `(425) 555-0182`,
@@ -171,20 +171,22 @@ working. URLs and domains are still scrubbed.
 
 ## Configuration
 
-Copy `pii-scrubber.example.yaml` to `pii-scrubber.yaml`, or point `PII_SCRUBBER_CONFIG` at any file. Every key is optional
+Copy `swapback.example.yaml` to `swapback.yaml`, or point `SWAPBACK_CONFIG` at any file. Every key is optional
 and has an environment override. Relative paths are relative to the config file. A minimal working setup is in
 [`examples/`](examples/).
 
 | key | env | default | |
 |---|---|---|---|
-| `mode` | `PII_SCRUBBER_MODE` | `on` | `on` swap + restore; `watch` count only, forward the original; `off` pass through |
-| `listen` | `PII_SCRUBBER_LISTEN` | `127.0.0.1:8787` | loopback only unless `allow_remote: true` |
-| `upstream` | `PII_SCRUBBER_UPSTREAM` | `https://api.openai.com` | any OpenAI-compatible base URL (OpenRouter, LiteLLM, vLLM, llama.cpp, ...) |
-| `known_file` | `PII_SCRUBBER_KNOWN_FILE` | none | your known values; configured but missing means requests are blocked |
-| `private_terms_file` | `PII_SCRUBBER_PRIVATE_TERMS` | none | codenames and figures that must not leave (below) |
-| `state_dir` | `PII_SCRUBBER_STATE_DIR` | `~/.local/state/pii-scrubber` | vault and request log |
-| `alert_webhook` | `PII_SCRUBBER_ALERT_WEBHOOK` | none | POSTs `{"text": ...}` when a request is blocked or the canary fails |
-| `canary_model` | `PII_SCRUBBER_CANARY_MODEL` | none | model used by `pii-scrubber canary` |
+| `mode` | `SWAPBACK_MODE` | `on` | `on` swap + restore; `watch` count only, forward the original; `off` pass through |
+| `listen` | `SWAPBACK_LISTEN` | `127.0.0.1:8787` | loopback only unless `allow_remote: true` |
+| `upstream` | `SWAPBACK_UPSTREAM` | `https://api.openai.com` | any OpenAI-compatible base URL (OpenRouter, LiteLLM, vLLM, llama.cpp, ...) |
+| `known_file` | `SWAPBACK_KNOWN_FILE` | none | your known values; configured but missing means requests are blocked |
+| `private_terms_file` | `SWAPBACK_PRIVATE_TERMS` | none | codenames and figures that must not leave (below) |
+| `state_dir` | `SWAPBACK_STATE_DIR` | `~/.local/state/swapback` | vault and request log |
+| `alert_webhook` | `SWAPBACK_ALERT_WEBHOOK` | none | POSTs `{"text": ...}` when a request is blocked or the canary fails |
+| `canary_model` | `SWAPBACK_CANARY_MODEL` | none | model used by `swapback canary` |
+
+Renamed from pii-scrubber in 0.2.0: the old `PII_SCRUBBER_*` variables are still read when the `SWAPBACK_*` one is unset, but they are deprecated.
 
 Also: `phone_regions`, `url_swap`, `patterns` (turn single detectors off, e.g. `{IP: false}`), `extra_secret_rules`,
 `log_requests`, `alert_min_interval_s`.
@@ -213,8 +215,8 @@ figures:
   - 2470000000
 ```
 
-**CLI.** `pii-scrubber check-config` (counts per type, never values), `pii-scrubber stats`, `pii-scrubber health`,
-`pii-scrubber scrub-file request.json`, and `pii-scrubber canary`, which sends a fake name and email through the running
+**CLI.** `swapback check-config` (counts per type, never values), `swapback stats`, `swapback health`,
+`swapback scrub-file request.json`, and `swapback canary`, which sends a fake name and email through the running
 proxy and checks that the provider saw only placeholders and the client got the values back. `GET /scrubber/health` on
 the proxy returns counters.
 
@@ -223,7 +225,7 @@ the proxy returns counters.
 Other open-source projects do the same job. This table reflects each project's own README and docs as read on
 2026-11-09; "unclear" means we could not confirm it there. Corrections are welcome.
 
-| | **pii-scrubber** | [PasteGuard][pg] | [Maskit][mk] | [Veil][vl] |
+| | **swapback** | [PasteGuard][pg] | [Maskit][mk] | [Veil][vl] |
 |---|---|---|---|---|
 | License | MIT | Apache-2.0 | AGPL-3.0 | Apache-2.0 |
 | Stack | Python 3.11+, 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew) |
@@ -236,7 +238,7 @@ Other open-source projects do the same job. This table reflects each project's o
 | APIs | OpenAI-compatible; Anthropic Messages (JSON and streaming) | OpenAI Chat + Responses, Anthropic, Codex | OpenAI, DeepSeek, Anthropic | Anthropic Messages, OpenAI Chat + Responses, Bedrock, Vertex, more |
 | Beyond text | No | Browser extension, dashboard, route-to-local-LLM mode | Image/PDF OCR redaction, browser extension, dashboard | Encrypted vault, DB seeding, shell-safe escaping, MCP DB tool |
 
-**Where pii-scrubber fits:** you want something small you can read in an afternoon, that never needs a model, restores
+**Where swapback fits:** you want something small you can read in an afternoon, that never needs a model, restores
 the exact original text for any agent's tools, and blocks rather than leaks. **Where others are stronger:** names you
 never listed (PasteGuard, Maskit and Veil's NER), more APIs and streaming formats (all three), images and documents
 (Maskit), and coding-agent hardening such as escaping restored values for shells (Veil).
@@ -328,7 +330,7 @@ python examples/smoke.py       # end-to-end: mock upstream + proxy, plain and st
 ```
 
 The vendored rule sets live
-in `pii_scrubber/vendor` (see `THIRD_PARTY_NOTICES.md`); `tools/build_vendor.py` regenerates the Presidio patterns.
+in `swapback/vendor` (see `THIRD_PARTY_NOTICES.md`); `tools/build_vendor.py` regenerates the Presidio patterns.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
 

@@ -18,6 +18,6 @@ labels: bug
 - What the upstream received (from `mock_seen.jsonl` if you used `examples/mock_upstream.py`):
 
 **Environment**
-- pii-scrubber version / commit:
+- swapback version / commit:
 - Python version and OS:
 - Client (SDK, agent, curl):

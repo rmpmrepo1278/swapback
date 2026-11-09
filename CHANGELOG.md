@@ -3,7 +3,16 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] - 0.1.1
+## [0.2.0] - 2026-11-09
+
+### Changed
+- **Renamed from pii-scrubber to swapback.** The package is now `swapback` (`import swapback`), the commands are
+  `swapback` and `swapback-proxy`, the environment variables are `SWAPBACK_*`, the config file is `swapback.yaml`
+  (example: `swapback.example.yaml`), the default state directory is `~/.local/state/swapback`, and the repository is
+  `github.com/rmpmrepo1278/swapback`. The old `PII_SCRUBBER_*` variables are still read as a fallback when the new one
+  is unset (deprecated). Move an existing state directory by hand if you want to keep its vault. The `«PERSON_1»`
+  placeholder format is unchanged. The 0.1.1 fixes below ship in this release.
+
 
 ### Fixed
 - **Flaky proxy test (CI, Python 3.13).** The proxy tests picked two "free" ports by binding and releasing them, and the kernel can hand the same port back twice (4 in 100,000 tries on Linux). When the proxy's port equalled the mock upstream's, the proxy could not start and the test talked to the mock directly, which looked like a leak. Each test now gets its own mock upstream on a kernel-picked port with its own list of received requests, the proxy listens on port 0 and reports its port, and the fixture fails loudly unless the scrubber itself answers. The proxy code was not at fault; new tests pin every `/v1/completions` prompt shape (string, list, nested, token ids; streamed or not).
@@ -40,7 +49,7 @@ All notable changes to this project are documented here. The format follows
 ## [0.1.0] - 2026-11-08
 
 ### Added
-- OpenAI-compatible HTTP proxy (`pii-scrubber-proxy`) that swaps known values and detected PII for stable placeholders
+- OpenAI-compatible HTTP proxy (`swapback-proxy`) that swaps known values and detected PII for stable placeholders
   before a request leaves the machine and restores them in the reply: plain JSON, OpenAI chat-completion SSE streams and
   tool-call arguments.
 - Known-values file with typed entries and written-variant matching; private terms and money figures.

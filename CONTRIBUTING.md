@@ -6,7 +6,7 @@ and fail-closed.
 ## Set up
 
 ```bash
-git clone https://github.com/rmpmrepo1278/pii-scrubber.git && cd pii-scrubber
+git clone https://github.com/rmpmrepo1278/swapback.git && cd swapback
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[test]"
 pytest -q

@@ -3,8 +3,8 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pii-scrubber"
-version = "0.1.0"
+name = "swapback"
+version = "0.2.0"
 description = "Local proxy that swaps personal data for placeholders before an LLM call and restores it byte-exact in the reply. Fails closed. OpenAI-compatible."
 readme = "README.md"
 license = {text = "MIT"}
@@ -33,24 +33,24 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/rmpmrepo1278/pii-scrubber"
-Documentation = "https://github.com/rmpmrepo1278/pii-scrubber#readme"
-Issues = "https://github.com/rmpmrepo1278/pii-scrubber/issues"
-Changelog = "https://github.com/rmpmrepo1278/pii-scrubber/blob/main/CHANGELOG.md"
-Security = "https://github.com/rmpmrepo1278/pii-scrubber/security/policy"
+Homepage = "https://github.com/rmpmrepo1278/swapback"
+Documentation = "https://github.com/rmpmrepo1278/swapback#readme"
+Issues = "https://github.com/rmpmrepo1278/swapback/issues"
+Changelog = "https://github.com/rmpmrepo1278/swapback/blob/main/CHANGELOG.md"
+Security = "https://github.com/rmpmrepo1278/swapback/security/policy"
 
 [project.optional-dependencies]
 test = ["pytest==8.4.2"]
 
 [project.scripts]
-pii-scrubber = "pii_scrubber.core:main"
-pii-scrubber-proxy = "pii_scrubber.proxy:main"
+swapback = "swapback.core:main"
+swapback-proxy = "swapback.proxy:main"
 
 [tool.setuptools]
-packages = ["pii_scrubber"]
+packages = ["swapback"]
 
 [tool.setuptools.package-data]
-pii_scrubber = ["vendor/*.toml", "vendor/*.md", "vendor/gitleaks/*", "vendor/presidio/*"]
+swapback = ["vendor/*.toml", "vendor/*.md", "vendor/gitleaks/*", "vendor/presidio/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

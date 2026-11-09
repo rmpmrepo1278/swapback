@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Score pii-scrubber's PATTERN detectors on evals/holdout3.json (64 synthetic cases).
+"""Score swapback's PATTERN detectors on evals/holdout3.json (64 synthetic cases).
 
 Patterns only: no known values and no private terms are configured, so this measures what the scrubber finds on its
 own. Names are expected to be missed (there is no NER: list the names you care about in known.yaml).
@@ -17,7 +17,7 @@ Usage:  python evals/run_holdout.py [--json] [--markdown] [--misses] [--file eva
 import argparse, json, os, sys, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from pii_scrubber import core  # noqa: E402
+from swapback import core  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # holdout category -> scrubber types that count as the right type (frozen; not tuned to the labels)

@@ -1,4 +1,4 @@
-"""Library-backed detectors behind pii_scrubber.core. Each detector returns spans (start, end, TYPE, value); core.py
+"""Library-backed detectors behind swapback.core. Each detector returns spans (start, end, TYPE, value); core.py
 owns the rest (placeholders, the vault, streaming restore, fail-closed).
 - PHONE: phonenumbers.PhoneNumberMatcher (configurable regions; '+' numbers parse in any region). Formatted numbers
   only, so bare digit runs (order ids, timestamps) are never swapped.

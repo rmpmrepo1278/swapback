@@ -1,5 +1,5 @@
-# pii-scrubber config. Copy to pii-scrubber.yaml (or point PII_SCRUBBER_CONFIG at it). Every key is optional;
-# PII_SCRUBBER_<KEY> env vars (MODE, LISTEN, UPSTREAM, KNOWN_FILE, PRIVATE_TERMS, STATE_DIR, ALERT_WEBHOOK,
+# swapback config. Copy to swapback.yaml (or point SWAPBACK_CONFIG at it). Every key is optional;
+# SWAPBACK_<KEY> env vars (MODE, LISTEN, UPSTREAM, KNOWN_FILE, PRIVATE_TERMS, STATE_DIR, ALERT_WEBHOOK,
 # CANARY_MODEL) override the file. Relative paths are relative to this file.
 
 mode: "on"                      # on = swap + restore + fail closed; watch = count only, forward the original; off
@@ -7,11 +7,11 @@ listen: 127.0.0.1:8787          # loopback only unless allow_remote: true
 upstream: https://api.openai.com  # any OpenAI-compatible base URL (OpenRouter, LiteLLM, vLLM, llama.cpp, ...)
 known_file: known.yaml          # your known values (see known.example.yaml); missing file = requests are blocked
 private_terms_file: ""          # optional codenames / internal figures (see private_terms.example.yaml)
-state_dir: ""                   # vault + request log; default ~/.local/state/pii-scrubber
+state_dir: ""                   # vault + request log; default ~/.local/state/swapback
 alert_webhook: ""               # optional: POST {"text": ...} here when a request is blocked or the canary fails
 alert_min_interval_s: 3600
 log_requests: true              # requests.jsonl in state_dir: counts and types only, never values
 phone_regions: [US]             # phonenumbers regions for numbers written without +country code
 url_swap: ["linkedin.com/in/"]  # URL substrings that count as a personal profile link
 patterns: {}                    # turn a detector off, e.g. {IP: false, ADDRESS: false}
-canary_model: ""                # model name for `pii-scrubber canary`
+canary_model: ""                # model name for `swapback canary`

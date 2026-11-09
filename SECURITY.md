@@ -1,6 +1,6 @@
 # Security policy
 
-pii-scrubber is a privacy control, so a bypass is a security bug: any way for a known value or a detected pattern to
+swapback is a privacy control, so a bypass is a security bug: any way for a known value or a detected pattern to
 reach the upstream unscrubbed, a request forwarded after a scrub error, or a restore that leaks one user's value into
 another context.
 

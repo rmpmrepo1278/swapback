@@ -1,4 +1,4 @@
-"""build_vendor: regenerate pii_scrubber/vendor/presidio/patterns.json from a presidio-analyzer wheel (no spaCy needed).
+"""build_vendor: regenerate swapback/vendor/presidio/patterns.json from a presidio-analyzer wheel (no spaCy needed).
 presidio-analyzer requires spaCy as a hard dependency and imports it at package import, so its predefined
 PatternRecognizer patterns + context words are vendored verbatim (MIT, Microsoft). usage: build_vendor.py <wheel>"""
 import hashlib, importlib.abc, importlib.util, json, os, re, sys, types, zipfile, tempfile

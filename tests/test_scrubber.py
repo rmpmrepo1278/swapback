@@ -1,8 +1,8 @@
-"""tests for pii_scrubber.core and pii_scrubber.proxy (swap and restore). Made-up values only."""
+"""tests for swapback.core and swapback.proxy (swap and restore). Made-up values only."""
 import http.server, json, os, socket, subprocess, sys, threading, time, urllib.error, urllib.request
 import pytest
 
-from pii_scrubber import core as s
+from swapback import core as s
 
 KNOWN = [("Jane Q Doe", "PERSON"), ("Jane", "PERSON"), ("jdoe@corp.example", "EMAIL"), ("Ozzie Pellam", "PERSON")] + s.CANARY
 
@@ -157,10 +157,23 @@ def test_load_known_formats_and_phone_variants(tmp_path):
         s.load_known(str(bad))
 
 
+def test_old_env_names_still_read_as_fallback(tmp_path, monkeypatch):
+    c = tmp_path / "cfg.yaml"
+    c.write_text("listen: 127.0.0.1:9999\n")
+    monkeypatch.delenv("SWAPBACK_UPSTREAM", raising=False)
+    monkeypatch.setenv("PII_SCRUBBER_UPSTREAM", "http://127.0.0.1:1111")       # pre-0.2 name
+    assert s.load_cfg(str(c))["upstream"] == "http://127.0.0.1:1111"
+    monkeypatch.setenv("SWAPBACK_UPSTREAM", "http://127.0.0.1:2222")           # new name wins
+    assert s.load_cfg(str(c))["upstream"] == "http://127.0.0.1:2222"
+    monkeypatch.delenv("SWAPBACK_CONFIG", raising=False)
+    monkeypatch.setenv("PII_SCRUBBER_CONFIG", str(c))
+    assert s.config_path() == str(c)
+
+
 def test_config_file_env_and_missing_known_fails_closed(tmp_path, monkeypatch):
     c = tmp_path / "cfg.yaml"
     c.write_text("listen: 127.0.0.1:9999\nknown_file: known.yaml\nstate_dir: st\n")
-    monkeypatch.setenv("PII_SCRUBBER_UPSTREAM", "http://127.0.0.1:1234")
+    monkeypatch.setenv("SWAPBACK_UPSTREAM", "http://127.0.0.1:1234")
     cfg = s.load_cfg(str(c))
     assert cfg["listen"] == "127.0.0.1:9999" and cfg["upstream"] == "http://127.0.0.1:1234"
     assert cfg["known_file"] == str(tmp_path / "known.yaml") and cfg["mode"] == "on"
@@ -317,16 +330,16 @@ def _listening_port(p, errp, deadline):
 def proxy(tmp_path):
     srv, seen = _mock_upstream()
     up = srv.server_address[1]
-    cfgp = tmp_path / "pii-scrubber.yaml"
+    cfgp = tmp_path / "swapback.yaml"
     st = tmp_path / "st"
     st.mkdir()
     (tmp_path / "known.json").write_text(json.dumps({"known": [list(x) for x in KNOWN]}))
     cfgp.write_text("mode: \"on\"\nlisten: 127.0.0.1:0\nupstream: http://127.0.0.1:%d\nstate_dir: %s\n"
                     "known_file: known.json\n" % (up, st))
-    env = dict(os.environ, PII_SCRUBBER_CONFIG=str(cfgp))
+    env = dict(os.environ, SWAPBACK_CONFIG=str(cfgp))
     errp = tmp_path / "proxy.stderr"
     with open(errp, "wb") as ef:
-        p = subprocess.Popen([sys.executable, "-B", "-m", "pii_scrubber.proxy"], env=env,
+        p = subprocess.Popen([sys.executable, "-B", "-m", "swapback.proxy"], env=env,
                              stdout=subprocess.PIPE, stderr=ef)
     try:
         px = _listening_port(p, errp, time.time() + 60)

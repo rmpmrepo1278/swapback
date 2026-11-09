@@ -1,5 +1,5 @@
 # local state and private data: never commit
-pii-scrubber.yaml
+swapback.yaml
 known.yaml
 known.json
 private_terms.yaml
@@ -8,7 +8,7 @@ requests.jsonl*
 canary.json
 alert_last.json
 state/
-.pii-scrubber/
+.swapback/
 mock_seen.jsonl
 # tooling
 .tools/

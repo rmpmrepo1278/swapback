@@ -1,10 +1,10 @@
 # Third-party notices
 
-pii-scrubber bundles rule data from the following projects. Their licenses are reproduced in full.
+swapback bundles rule data from the following projects. Their licenses are reproduced in full.
 
 ## gitleaks v8.30.1
 
-- What: the default detection rules, config/gitleaks.toml at tag v8.30.1, vendored as pii_scrubber/vendor/gitleaks/gitleaks.toml (unmodified).
+- What: the default detection rules, config/gitleaks.toml at tag v8.30.1, vendored as swapback/vendor/gitleaks/gitleaks.toml (unmodified).
 - Source: https://github.com/gitleaks/gitleaks
 - License: MIT
 
@@ -34,7 +34,7 @@ SOFTWARE.
 
 ## Microsoft Presidio (presidio-analyzer 2.2.366)
 
-- What: the regex patterns, scores and context words of the predefined recognizers EmailRecognizer, CreditCardRecognizer, IbanRecognizer, UsSsnRecognizer, IpRecognizer and UrlRecognizer, vendored as pii_scrubber/vendor/presidio/patterns.json; their validation logic is ported in pii_scrubber/detect.py.
+- What: the regex patterns, scores and context words of the predefined recognizers EmailRecognizer, CreditCardRecognizer, IbanRecognizer, UsSsnRecognizer, IpRecognizer and UrlRecognizer, vendored as swapback/vendor/presidio/patterns.json; their validation logic is ported in swapback/detect.py.
 - Source: https://github.com/microsoft/presidio
 - License: MIT
 

@@ -1,7 +1,7 @@
-"""pii_scrubber.core: swap known personal values and PII patterns for stable placeholders before a chat request leaves
+"""swapback.core: swap known personal values and PII patterns for stable placeholders before a chat request leaves
 your machine, and put the real values back in the response.
 
-Plain functions over OpenAI-style JSON; the HTTP proxy (pii_scrubber.proxy) is a thin adapter. No ML/NER: what is
+Plain functions over OpenAI-style JSON; the HTTP proxy (swapback.proxy) is a thin adapter. No ML/NER: what is
 swapped is what you list (known values, private terms) plus what the pattern detectors find. Never logs or prints a
 real value: counts and types only.
 
@@ -24,7 +24,7 @@ Pieces
                 swap the outgoing strings are re-checked for known values and the request is blocked if one is left.
   Paths         a known value that is one segment of a filesystem path (/home/<user>/..., ~/...) is left alone, so
                 agents' file tools keep working; restore keeps the original case of every value.
-CLI: pii-scrubber stats | health | canary | scrub-file IN.json | check-config
+CLI: swapback stats | health | canary | scrub-file IN.json | check-config
 """
 import json, os, re, sys, threading, time, hashlib, tempfile
 
@@ -43,10 +43,10 @@ DEFAULTS = {"mode": "on", "listen": "127.0.0.1:8787", "upstream": "https://api.o
             "system_note": "Note: values written like \u00abPERSON_3\u00bb or \u00abEMAIL_1\u00bb are privacy stand-ins that the "
                            "user's own device swaps back to the real value. Use them exactly as written, including in "
                            "tool arguments, and do not mention them."}
-ENV = {"mode": "PII_SCRUBBER_MODE", "listen": "PII_SCRUBBER_LISTEN", "upstream": "PII_SCRUBBER_UPSTREAM",
-       "known_file": "PII_SCRUBBER_KNOWN_FILE", "private_terms_file": "PII_SCRUBBER_PRIVATE_TERMS",
-       "state_dir": "PII_SCRUBBER_STATE_DIR", "alert_webhook": "PII_SCRUBBER_ALERT_WEBHOOK",
-       "canary_model": "PII_SCRUBBER_CANARY_MODEL"}
+ENV = {"mode": "SWAPBACK_MODE", "listen": "SWAPBACK_LISTEN", "upstream": "SWAPBACK_UPSTREAM",
+       "known_file": "SWAPBACK_KNOWN_FILE", "private_terms_file": "SWAPBACK_PRIVATE_TERMS",
+       "state_dir": "SWAPBACK_STATE_DIR", "alert_webhook": "SWAPBACK_ALERT_WEBHOOK",
+       "canary_model": "SWAPBACK_CANARY_MODEL"}
 PATH_KEYS = ("known_file", "private_terms_file", "state_dir", "extra_secret_rules")
 
 
@@ -55,15 +55,24 @@ class ScrubError(Exception):
 
 
 # ---------------------------------------------------------------- config
+def _env(name):
+    """SWAPBACK_X, else the pre-0.2 name PII_SCRUBBER_X (deprecated, read-only fallback)."""
+    v = os.environ.get(name)
+    if not v and name.startswith("SWAPBACK_"):
+        v = os.environ.get("PII_SCRUBBER_" + name[len("SWAPBACK_"):])
+    return v
+
+
 def config_path():
-    p = os.environ.get("PII_SCRUBBER_CONFIG")
+    p = _env("SWAPBACK_CONFIG")
     if p:
         return p
-    return "pii-scrubber.yaml" if os.path.exists("pii-scrubber.yaml") else ""
+    return "swapback.yaml" if os.path.exists("swapback.yaml") else ""
 
 
 def load_cfg(path=None):
-    """defaults <- YAML config file (PII_SCRUBBER_CONFIG, or ./pii-scrubber.yaml) <- PII_SCRUBBER_* env vars.
+    """defaults <- YAML config file (SWAPBACK_CONFIG, or ./swapback.yaml) <- SWAPBACK_* env vars
+    (the pre-0.2 PII_SCRUBBER_* names are still read when the new one is unset).
     Relative file paths in the config file are relative to that file."""
     import yaml
     c = dict(DEFAULTS)
@@ -78,8 +87,9 @@ def load_cfg(path=None):
         if v:
             c[k] = os.path.join(base, os.path.expanduser(str(v)))
     for k, env in ENV.items():
-        if os.environ.get(env):
-            c[k] = os.path.abspath(os.path.expanduser(os.environ[env])) if k in PATH_KEYS else os.environ[env]
+        v = _env(env)
+        if v:
+            c[k] = os.path.abspath(os.path.expanduser(v)) if k in PATH_KEYS else v
     m = c.get("mode")
     c["mode"] = "on" if m is True else "off" if m is False else str(m).strip().lower()   # YAML reads on/off as bools
     if c["mode"] not in ("off", "watch", "on"):
@@ -89,7 +99,7 @@ def load_cfg(path=None):
 
 def state_dir(cfg):
     d = cfg.get("state_dir") or os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
-                                             "pii-scrubber")
+                                             "swapback")
     os.makedirs(d, mode=0o700, exist_ok=True)
     return d
 
@@ -897,7 +907,7 @@ def flush_all(scr, state, template=None):
 
 # ---------------------------------------------------------------- alerts (optional generic webhook)
 def alert(cfg, text):
-    """POST {"text": "pii-scrubber: ..."} to cfg alert_webhook (Slack/Discord-compatible incoming webhook), at most once
+    """POST {"text": "swapback: ..."} to cfg alert_webhook (Slack/Discord-compatible incoming webhook), at most once
     per alert_min_interval_s. The text never includes a value. Returns a status word."""
     import urllib.request
     url = cfg.get("alert_webhook")
@@ -911,7 +921,7 @@ def alert(cfg, text):
     if time.time() - last < float(cfg.get("alert_min_interval_s", 3600)):
         return "rate_limited"
     try:
-        req = urllib.request.Request(url, method="POST", data=json.dumps({"text": "pii-scrubber: " + text[:300]}).encode(),
+        req = urllib.request.Request(url, method="POST", data=json.dumps({"text": "swapback: " + text[:300]}).encode(),
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=8) as r:
             ok = 200 <= r.status < 300
@@ -947,7 +957,7 @@ def canary(cfg=None, model=None, auth=None):
     model = model or cfg.get("canary_model")
     res = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "mode": cfg["mode"], "health": health(cfg)}
     if not model:
-        res.update(error="set canary_model (config) or PII_SCRUBBER_CANARY_MODEL", **{"pass": False})
+        res.update(error="set canary_model (config) or SWAPBACK_CANARY_MODEL", **{"pass": False})
         return res
     fake = [v for v, _ in CANARY]
     msg = {"model": model, "stream": False, "max_tokens": 80, "temperature": 0,

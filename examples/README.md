@@ -12,7 +12,7 @@ All values here are invented.
 
 ```bash
 python examples/mock_upstream.py 8009 &
-PII_SCRUBBER_CONFIG=examples/quickstart.yaml pii-scrubber-proxy &
+SWAPBACK_CONFIG=examples/quickstart.yaml swapback-proxy &
 sh examples/curl_demo.sh
 kill %1 %2
 ```

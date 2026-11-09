@@ -2,7 +2,7 @@
 loosely so the test only fails on a real regression."""
 import json, random, statistics, time
 
-from pii_scrubber import core as s
+from swapback import core as s
 
 WORDS = ("the program review moved to next week and the team asked for a short status on risks open items and "
          "the integration plan for the release").split()
