@@ -15,3 +15,16 @@ phone_regions: [US]             # phonenumbers regions for numbers written witho
 url_swap: ["linkedin.com/in/"]  # URL substrings that count as a personal profile link
 patterns: {}                    # turn a detector off, e.g. {IP: false, ADDRESS: false}
 canary_model: ""                # model name for `swapback canary`
+
+# Tool calls run on your machine. Real values go back into their arguments except for calls that look like network or
+# shell egress, which keep the placeholders. Order: deny, allow, default: keep, egress_names, keep_if_url.
+# `tool_restore: false` restores every tool call (the 0.2 behaviour).
+tool_restore:
+  default: restore              # tools nothing below matches: restore (real values) or keep (placeholders)
+  keep_if_url: true             # keep placeholders when any argument is or contains a URL
+  allow: []                     # tool names (case-insensitive globs) that always get real values, e.g. [send_email]
+  deny: []                      # tool names that never get real values
+  # egress_names replaces the built-in list. Each entry matches whole words of the tool name (WebFetch = web_fetch);
+  # * matches the rest of a word. Built-in list:
+  # [fetch*, http*, curl, wget, web*, brows*, request*, url*, navigat*, download*, upload*, exec*, "*shell", bash, sh,
+  #  zsh, cmd, terminal, run, ssh, scp, rsync, git_push, push, email*, mail, send, post, message, webhook*, notify, publish]

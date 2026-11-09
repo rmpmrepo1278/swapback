@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "swapback"
-version = "0.2.1"
+version = "0.3.0"
 description = "Local proxy that swaps personal data for placeholders before an LLM call and restores it byte-exact in the reply. Fails closed. OpenAI-compatible."
 readme = "README.md"
 license = {text = "MIT"}

