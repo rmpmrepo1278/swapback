@@ -5,7 +5,7 @@ import pytest
 import swapback
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-COMMANDS = ("stats", "check-config", "health", "canary", "scrub-file")
+COMMANDS = ("stats", "check-config", "health", "canary", "scrub-file", "known")
 
 
 def _run(entry, args, env_extra, cwd, timeout=30):

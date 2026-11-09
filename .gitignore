@@ -1,6 +1,7 @@
 # local state and private data: never commit
 swapback.yaml
 known.yaml
+known.suggestions.yaml
 known.json
 private_terms.yaml
 vault.json

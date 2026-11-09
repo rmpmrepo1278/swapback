@@ -1,0 +1,3 @@
+First Name,Middle Name,Last Name,Nickname,Organization Name,E-mail 1 - Label,E-mail 1 - Value,Phone 1 - Label,Phone 1 - Value,Address 1 - Label,Address 1 - Street,Address 1 - City,Address 1 - Postal Code
+Priya,,Fakename,P,Example Corp,* Home,priya.fakename@example.com ::: pf@example.org,Mobile,(425) 555-0104,Home,77 Harbor Road,Springfield,98000-1234
+Jane,Q,Testperson,,,* Home,jane.testperson@example.org,Mobile,425-555-0101,,,,

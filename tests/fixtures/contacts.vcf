@@ -1,0 +1,28 @@
+BEGIN:VCARD
+VERSION:3.0
+N:Testperson;Jane;Q;;
+FN:Jane Q Testperson
+item1.EMAIL;type=INTERNET;type=pref:jane.testperson@example.org
+TEL;type=CELL:+1 (425) 555-0101
+ADR;type=HOME:;;1234 Elm Street\, Apt 5;Springfield;WA;98000;USA
+NOTE:a very long note that is folded onto the next
+  line by the exporting app
+END:VCARD
+BEGIN:VCARD
+VERSION:2.1
+N;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:M=C3=BCller;Zo=C3=AB;;;
+TEL;CELL:425.555.0102
+EMAIL;HOME:zoe.mueller@example.net
+END:VCARD
+BEGIN:VCARD
+VERSION:4.0
+FN:Will Ozzard
+N:Ozzard;Will;;;
+TEL;VALUE=uri;TYPE="voice,cell":tel:+1-425-555-0103
+EMAIL:not-an-email
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Mom
+TEL:12
+END:VCARD

@@ -1252,6 +1252,8 @@ def cli_parser():
         sp = sub.add_parser(name, help=short, description=desc)
         if name == "scrub-file":
             sp.add_argument("file", metavar="IN.json", help="an OpenAI-style request body (JSON)")
+    from . import known
+    known.add_parser(sub)
     return ap
 
 
@@ -1259,6 +1261,13 @@ def main(argv=None):
     argv = sys.argv if argv is None else argv
     args = cli_parser().parse_args(argv[1:])          # --help/--version/bad input exit here, before any config load
     cmd = args.cmd or "stats"
+    if cmd == "known":                                # works without a config; uses its known_file when there is one
+        from . import known
+        try:
+            kcfg = load_cfg()
+        except Exception:
+            kcfg = dict(DEFAULTS)
+        sys.exit(known.run(args, kcfg))
     cfg = load_cfg()
     if cmd == "stats":
         s = Scrubber(cfg)

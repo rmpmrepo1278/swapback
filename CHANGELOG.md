@@ -19,6 +19,14 @@ All notable changes to this project are documented here. The format follows
 - The top-level `user` field is now scrubbed (it was skipped, with only a known-value check). `metadata`,
   `instructions`, `safety_identifier` and other free-text fields were already scrubbed; tests now cover them.
 
+### Added
+- `swapback known init` builds or extends `known.yaml` from a vCard export (2.1, 3.0, 4.0), a CSV (Google and Outlook
+  contact exports, any name/email/phone/address columns, or value,type rows) and other known files. It merges without
+  duplicates (case, spacing and phone formats), writes the file `0600`, skips one-word contacts that are relations or
+  everyday words, and prints counts only (`--show` for values, `--dry-run` to write nothing). `--scan` reads past
+  prompts (text or JSONL) and writes candidate names, emails and phones to a separate `known.suggestions.yaml` for
+  review; suggestions are never merged on their own. Standard library only.
+
 ### Changed
 - The "keep placeholders as written" system note now also reaches requests without a system message (a system message
   is added, but only when the request carries placeholders), a system or `developer` message with content parts,

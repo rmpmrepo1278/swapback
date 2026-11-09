@@ -78,7 +78,32 @@ known_file: known.yaml
 private_terms_file: private_terms.yaml   # leave "" if you skipped the private terms file
 ```
 
-Edit `known.yaml` **before** you start the proxy. The example values are fake, and a configured `known_file` that is
+### Build known.yaml from your contacts
+
+Names are only swapped if they are in your known file, so most of the value is in that list. Instead of typing it,
+build it from a contacts export:
+
+```bash
+swapback known init --vcf contacts.vcf                 # iPhone / macOS / Android export (vCard 2.1, 3.0, 4.0)
+swapback known init --csv google_contacts.csv          # Google or Outlook CSV, or any name/email/phone columns
+swapback known init --scan past_prompts.jsonl          # suggests names, emails, phones you have actually sent
+```
+
+- It reads full names, emails, phone numbers and street addresses, and merges them into `known_file` (or `--out`)
+  without duplicates: `Jane Doe` and `jane doe`, or `425-555-0101` and `(425) 555-0101`, count once.
+- The file is written with mode `0600`. Comments in an existing file are not kept.
+- It prints counts only. `--show` also prints the values, `--dry-run` writes nothing.
+- One-word contacts that are relations or common words (`Mom`, `Dentist`, `Will`) are skipped: matching is
+  case-insensitive, so they would swap ordinary words. `--first-names` also adds each contact's first name on its own,
+  with the same skip list.
+- `--scan` reads text or JSONL (any JSON strings in it) and writes candidates to `known.suggestions.yaml`: emails and
+  phones it finds, and capitalised two- or three-word names seen at least twice (`--min-count`). Suggestions are never
+  used or merged on their own. Delete what is not personal, then merge with `swapback known init --yaml
+  known.suggestions.yaml`.
+
+Only Python's standard library and the existing dependencies are used; nothing is sent anywhere.
+
+Edit or build `known.yaml` **before** you start the proxy. The example values are fake, and a configured `known_file` that is
 missing blocks every request (`503`, fail-closed). Then:
 
 ```bash
@@ -102,7 +127,9 @@ Other providers work the same way: `upstream: https://openrouter.ai` with client
 
 Any agent that lets you set a provider base URL can sit behind the proxy. Tested end to end with
 [OpenClaw](https://github.com/openclaw/openclaw) 2026.10.7: a fresh clone, the steps above and one provider block gave a
-scrubbed chat in a few minutes; replies, streamed replies and tool calls came back with the real values.
+scrubbed chat in a few minutes; replies, streamed replies and tool calls came back with the real values. Since 0.3.0
+OpenClaw's `exec`, `web_fetch`, `web_search`, `browser` and `message` tools keep placeholders by default
+(see [Tool calls](#tool-calls)).
 
 ```json5
 // OpenClaw config (openclaw.json)
