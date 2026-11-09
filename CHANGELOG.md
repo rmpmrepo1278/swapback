@@ -3,6 +3,44 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-11-09
+
+Fixes from an independent re-review against the launch bar.
+
+### Security
+- **Listed values with non-ASCII letters leaked when the text around them was JSON-escaped.** Python's `json.dumps`
+  writes `Søren` as `S\u00f8ren`, so a listed accented name inside a tool result (OpenAI `tool`, Anthropic
+  `tool_result`, Responses `function_call_output`) or in tool-call arguments kept in the history went to the provider
+  as written, and the egress re-check missed it. swapback now also matches the decoded form of escaped text
+  (`\uXXXX` in any hex case and surrogate pairs, `\xXX`, `\n` and the other JSON escapes, HTML entities such as
+  `&oslash;` and `&#248;`, `%XX` runs, JSON inside JSON up to three levels) and swaps the escaped span it came from.
+  The restore gives back the decoded spelling.
+- **The egress re-check decodes the same escapes before checking**, so a listed value the swap misses in any spelling
+  the model could decode blocks the request (`503`) instead of leaving.
+- **A listed address written over two lines or without its comma** (`17 Example Mews\nDublin …`) is now matched:
+  commas, semicolons and newlines separate the parts of listed values that are not names.
+
+### Changed
+- **Listed names that are also ordinary phrases** ("Will Hunt", "Rose Marsh") are matched only when every word is
+  capitalised (`Will Hunt`, `WILL HUNT`, `Hunt, Will`), so "I will hunt for the keys" is left untouched. Set
+  `common_names_title_case: false` for the old any-case matching. `check-config` still lists these names (line numbers,
+  never values) and says which way they are matched.
+
+### Added
+- `swapback selftest` (`--json`): a reproducible leak test with made-up data shipped in the package. It sends 31 listed
+  values in 90 written forms through 7 request paths to a recording fake model and prints listed values caught, forms
+  leaked, ordinary sentences untouched, exact round trips and the unlisted catch rate. Exit code 0 on PASS. The README
+  publishes its numbers.
+- README: leads with the tool-call exfiltration threat and the `swapback demo` output, a "Use alongside LiteLLM or an
+  NER tool" section, and comparison rows for the tool-call egress policy, Responses streams, fail-closed guards and a
+  public leak test.
+
+### Fixed
+- A sharp shrink of the known file prints a warning line on stderr, and `/scrubber/health` reports
+  `"status": "warning"` and `"ok": false` while the previous values are still being protected (`"status"` is `"ok"`,
+  `"warning"` or `"blocked"`).
+- `swapback check-config` exits with code 2 when the known file has no values (and `allow_empty_known` is not set).
+
 ## [0.4.1] - 2026-11-09
 
 Fixes from an independent pre-launch review.

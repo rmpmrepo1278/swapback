@@ -99,7 +99,12 @@ class H(BaseHTTPRequestHandler):
             except S.ScrubError as e:
                 STATE["last_error"] = str(e)[:120]
             warn = SCR.warnings()
-            return self._send_json(200, {"ok": not SCR.known_block, "mode": CFG["mode"], "known": len(SCR.known),
+            # status: "ok"; "warning" when the known file shrank sharply (ok is false while the previous values are still
+            # being protected, so a monitor that reads ok notices); "blocked" when every request is refused
+            status = "blocked" if SCR.known_block else "warning" if SCR.known_warning else "ok"
+            return self._send_json(200, {"ok": not SCR.known_block and not SCR.known_held, "status": status,
+                                         "mode": CFG["mode"],
+                                         "known": len(SCR.known),
                                          "vault": len(SCR.rev), "warnings": warn,
                                          "requests": STATE["requests"], "blocked": STATE["blocked"],
                                          "errors": STATE["errors"], "last_error": STATE["last_error"],

