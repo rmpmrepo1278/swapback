@@ -1,0 +1,7 @@
+# Quickstart config: the proxy on 127.0.0.1:8787 in front of the mock upstream on 127.0.0.1:8009.
+# Synthetic values only. For a real provider, set upstream to e.g. https://api.openai.com.
+mode: "on"
+listen: 127.0.0.1:8787
+upstream: http://127.0.0.1:8009
+known_file: known.demo.yaml        # relative to this file
+state_dir: .pii-scrubber           # vault + request log, relative to this file (git-ignored)

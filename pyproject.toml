@@ -5,20 +5,39 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pii-scrubber"
 version = "0.1.0"
-description = "Swap personal data for placeholders before an LLM call, restore it after, fail closed. OpenAI-compatible proxy."
+description = "Local proxy that swaps personal data for placeholders before an LLM call and restores it byte-exact in the reply. Fails closed. OpenAI-compatible."
 readme = "README.md"
 license = {text = "MIT"}
+authors = [{name = "rmpmrepo1278"}]
 requires-python = ">=3.11"
+keywords = ["pii", "privacy", "llm", "proxy", "redaction", "pseudonymization", "openai", "agents", "data-protection"]
 dependencies = [
     "phonenumbers==9.0.43",
     "pyahocorasick==2.3.1",
     "PyYAML==6.0.3",
 ]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Proxy Servers",
     "Topic :: Security",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+
+[project.urls]
+Homepage = "https://github.com/rmpmrepo1278/pii-scrubber"
+Documentation = "https://github.com/rmpmrepo1278/pii-scrubber#readme"
+Issues = "https://github.com/rmpmrepo1278/pii-scrubber/issues"
+Changelog = "https://github.com/rmpmrepo1278/pii-scrubber/blob/main/CHANGELOG.md"
+Security = "https://github.com/rmpmrepo1278/pii-scrubber/security/policy"
 
 [project.optional-dependencies]
 test = ["pytest==8.4.2"]

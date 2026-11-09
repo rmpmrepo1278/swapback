@@ -1,0 +1,7 @@
+# Made-up values for the demo. Your real file lives outside the repo (or as known.yaml, which is git-ignored).
+PERSON:
+  - Jane Q Doe
+EMAIL:
+  - jdoe@corp.example
+PHONE:
+  - "425-555-0182"                 # also matches (425) 555-0182, 425.555.0182, +14255550182, ...

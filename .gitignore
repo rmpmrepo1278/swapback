@@ -20,3 +20,8 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+# editor/tool backups: never commit
+*.bak
+*.bak.*
+*.bak-*
+*.bak*.sha256
