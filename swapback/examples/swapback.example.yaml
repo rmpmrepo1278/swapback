@@ -1,0 +1,36 @@
+# swapback config. Copy to swapback.yaml (or point SWAPBACK_CONFIG at it). Every key is optional;
+# SWAPBACK_<KEY> env vars (MODE, LISTEN, UPSTREAM, KNOWN_FILE, PRIVATE_TERMS, STATE_DIR, ALERT_WEBHOOK,
+# CANARY_MODEL) override the file. Relative paths are relative to this file.
+
+mode: "on"                      # on = swap + restore + fail closed; watch = count only, forward the original; off
+listen: 127.0.0.1:8787          # loopback only unless allow_remote: true
+upstream: https://api.openai.com  # any OpenAI-compatible base URL (OpenRouter, LiteLLM, vLLM, llama.cpp, ...)
+known_file: known.yaml          # your known values (see known.example.yaml); missing file = requests are blocked
+private_terms_file: ""          # optional codenames / internal figures (see private_terms.example.yaml)
+state_dir: ""                   # vault + request log; default ~/.local/state/swapback
+alert_webhook: ""               # optional: POST {"text": ...} here when a request is blocked or the canary fails
+alert_min_interval_s: 3600
+log_requests: true              # requests.jsonl in state_dir: counts and types only, never values
+phone_regions: [US]             # phonenumbers regions for numbers written without +country code
+url_swap: ["linkedin.com/in/"]  # URL substrings that count as a personal profile link
+patterns: {}                    # turn a detector off, e.g. {IP: false, ADDRESS: false}
+canary_model: ""                # model name for `swapback canary`
+
+# Tool calls run on your machine. Real values go back into their arguments except for calls that look like network or
+# shell egress, which keep the placeholders. Order: deny, allow, default: keep, egress_names, keep_if_url.
+# `tool_restore: false` restores every tool call (the 0.2 behaviour).
+tool_restore:
+  default: restore              # tools nothing below matches: restore (real values) or keep (placeholders)
+  keep_if_url: true             # keep placeholders when any argument is or contains a URL
+  allow: []                     # tool names (case-insensitive globs) that always get real values, e.g. [send_email]
+  deny: []                      # tool names that never get real values
+  # egress_names replaces the built-in list. Each entry matches whole words of the tool name (WebFetch = web_fetch);
+  # * matches the rest of a word. Built-in list:
+  # [fetch*, http*, curl, wget, web*, brows*, request*, url*, navigat*, download*, upload*, exec*, "*shell", bash, sh,
+  #  zsh, cmd, terminal, run, ssh, scp, rsync, git_push, push, email*, mail, send, post, message, webhook*, notify, publish]
+
+# Optional: your own Python around each request (spend cap, local fallback, usage, extra health endpoints).
+# Hooks only see placeholders, never real values. See the README's "Hooks" section.
+# hooks:
+#   module: spend_cap.py        # a .py file (relative to this file) or an importable module name
+#   options: {daily_usd: 5}

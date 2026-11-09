@@ -15,6 +15,14 @@ All notable changes to this project are documented here. The format follows
   `before_forward` and `on_upstream_response` fail closed with a 503. Use it for a spend cap with a local-model
   fallback, usage accounting or a health endpoint; see the README's "Hooks" section.
 - `/scrubber/health` reports the hooks module and `hook_errors`; `swapback check-config` lists the hook functions.
+- `swapback init` writes a starter `swapback.yaml`, `known.yaml` and `private_terms.example.yaml` (0600) from example
+  files now shipped inside the package, so `pip install swapback` users have them; it never overwrites without
+  `--force`.
+
+### Changed
+- README comparison table: the tool-call row now describes the `tool_restore` policy (it still said every tool got
+  real values, the 0.2 behaviour), streaming lists the Responses API, and piighost and Kiji Privacy Proxy are added
+  (claims from their own READMEs; "Unclear" where they do not say).
 - README "Framework recipes": example `tool_restore` lists for OpenClaw, Claude Code, Codex CLI and a strict generic
   setup. Config only; swapback has no framework-specific code.
 

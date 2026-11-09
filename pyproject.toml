@@ -51,6 +51,7 @@ swapback-proxy = "swapback.proxy:main"
 packages = ["swapback", "swapback.vendor", "swapback.vendor.gitleaks", "swapback.vendor.presidio"]
 
 [tool.setuptools.package-data]
+"swapback" = ["examples/*.yaml"]
 "swapback.vendor" = ["*.toml", "*.md"]
 "swapback.vendor.gitleaks" = ["*"]
 "swapback.vendor.presidio" = ["*"]

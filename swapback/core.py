@@ -1352,10 +1352,43 @@ _COMMANDS = (
      "Send a fake name and email through the running proxy to the real provider. Passes when the provider saw only "
      "placeholders and the reply got the values back; exits 1 otherwise. Needs canary_model in the config or "
      "SWAPBACK_CANARY_MODEL, and the provider's key (OPENAI_API_KEY)."),
+    ("init", "write a starter swapback.yaml and known.yaml (from the examples shipped in the package)",
+     "Write swapback.yaml, known.yaml and private_terms.example.yaml into the current directory (or --dir) from the example files shipped with "
+     "the package, with 0600 permissions. Existing files are left alone unless --force. Edit known.yaml (or build it "
+     "with `swapback known init`), then run `swapback check-config`."),
     ("scrub-file", "scrub one request JSON locally and print counts and time",
      "Scrub one OpenAI-style request JSON file locally (nothing is sent anywhere) and print the counts per type and "
      "the time it took. Never prints a value."),
 )
+
+
+EXAMPLES = (("swapback.example.yaml", "swapback.yaml"), ("known.example.yaml", "known.yaml"),
+            ("private_terms.example.yaml", "private_terms.example.yaml"))
+
+
+def example_text(name):
+    """the text of an example file shipped in the package (swapback/examples/)."""
+    from importlib import resources
+    return resources.files("swapback").joinpath("examples", name).read_text(encoding="utf-8")
+
+
+def init_files(d=".", force=False):
+    """write swapback.yaml and known.yaml from the packaged examples (0600). Prints what it did; returns an exit code."""
+    os.makedirs(d, exist_ok=True)
+    done = {}
+    for src, dst in EXAMPLES:
+        p = os.path.join(d, dst)
+        if os.path.exists(p) and not force:
+            done[dst] = "exists (kept; --force to overwrite)"
+            continue
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(example_text(src))
+        os.chmod(p, 0o600)
+        done[dst] = "written"
+    print(json.dumps({"dir": os.path.abspath(d), "files": done,
+                      "next": "edit known.yaml (or: swapback known init), then: swapback check-config"}))
+    return 0
 
 
 def _version():
@@ -1376,6 +1409,9 @@ def cli_parser():
         sp = sub.add_parser(name, help=short, description=desc)
         if name == "scrub-file":
             sp.add_argument("file", metavar="IN.json", help="an OpenAI-style request body (JSON)")
+        if name == "init":
+            sp.add_argument("--dir", default=".", help="where to write the files (default: the current directory)")
+            sp.add_argument("--force", action="store_true", help="overwrite existing files")
     from . import known
     known.add_parser(sub)
     return ap
@@ -1385,6 +1421,8 @@ def main(argv=None):
     argv = sys.argv if argv is None else argv
     args = cli_parser().parse_args(argv[1:])          # --help/--version/bad input exit here, before any config load
     cmd = args.cmd or "stats"
+    if cmd == "init":                                 # needs no config: it writes one
+        sys.exit(init_files(args.dir, args.force))
     if cmd == "known":                                # works without a config; uses its known_file when there is one
         from . import known
         try:

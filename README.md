@@ -65,10 +65,12 @@ Stop both with `kill %1 %2`.
 ### Set it up for a real provider
 
 ```bash
-cp swapback.example.yaml swapback.yaml
-cp known.example.yaml known.yaml                    # then EDIT it: your names, emails, phones (see Configuration)
+swapback init          # writes swapback.yaml, known.yaml and private_terms.example.yaml (0600) from the shipped examples
+                       # then EDIT known.yaml: your names, emails, phones (see Configuration)
 cp private_terms.example.yaml private_terms.yaml    # optional: codenames and money figures
 ```
+
+`swapback init` never overwrites a file unless you pass `--force`; from a clone, the same examples sit in the repo root.
 
 In `swapback.yaml`:
 
@@ -415,29 +417,33 @@ def extra_routes():
 Other open-source projects do the same job. This table reflects each project's own README and docs as read on
 2026-11-09; "unclear" means we could not confirm it there. Corrections are welcome.
 
-| | **swapback** | [PasteGuard][pg] | [Maskit][mk] | [Veil][vl] |
-|---|---|---|---|---|
-| License | MIT | Apache-2.0 | AGPL-3.0 | Apache-2.0 |
-| Stack | Python 3.11+, 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew) |
-| Needs an ML model | No | Yes: GLiNER for names and places ([docs][pg-sem]) | Ships a local ONNX NER model | Optional: 46 MB ONNX NER |
-| Your own list of values | Yes, typed, reloaded live | Yes: `denylist` patterns ([docs][pg-mask]) | Yes: custom words and regexes | Yes: seeded from your data sources |
-| Restores values in replies | Yes, byte-exact as written | Yes ("supported placeholders") | Yes | Yes |
-| Streaming restore | OpenAI chat-completions and Anthropic Messages SSE | Yes | Yes (SSE) | Unclear per API |
-| Tool-call arguments | Restored for every tool, JSON-escaped | Unclear | Unclear | Per-tool policy: unknown and network tools get pseudonyms |
-| On a scrub error | Fails closed (`503`) + egress re-check | Unclear | Unclear; documents a passthrough that forwards plaintext when masking is off or the app exits | Fails closed (`502`) + second guard |
-| APIs | OpenAI Chat and Responses, Anthropic Messages (JSON and streaming) | OpenAI Chat + Responses, Anthropic, Codex | OpenAI, DeepSeek, Anthropic | Anthropic Messages, OpenAI Chat + Responses, Bedrock, Vertex, more |
-| Beyond text | No | Browser extension, dashboard, route-to-local-LLM mode | Image/PDF OCR redaction, browser extension, dashboard | Encrypted vault, DB seeding, shell-safe escaping, MCP DB tool |
+| | **swapback** | [PasteGuard][pg] | [Maskit][mk] | [Veil][vl] | [piighost][ph] | [Kiji Privacy Proxy][kj] |
+|---|---|---|---|---|---|---|
+| License | MIT | Apache-2.0 | AGPL-3.0 | Apache-2.0 | MIT | Apache-2.0 |
+| Stack | Python 3.11+, 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew) | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
+| Needs an ML model | No | Yes: GLiNER for names and places ([docs][pg-sem]) | Ships a local ONNX NER model | Optional: 46 MB ONNX NER | Optional: pluggable regex, NER or LLM detectors; exact-match needs none | Yes: local ONNX model, 26 PII types |
+| Your own list of values | Yes, typed, reloaded live | Yes: `denylist` patterns ([docs][pg-mask]) | Yes: custom words and regexes | Yes: seeded from your data sources | Yes: `ExactMatchDetector` | Custom regex rules |
+| Stand-ins | Typed placeholders (`«EMAIL_1»`) | Placeholders | Unclear | Pseudonyms | Typed placeholders (`<<EMAIL:1>>`) | Realistic dummy values |
+| Restores values in replies | Yes, byte-exact as written | Yes ("supported placeholders") | Yes | Yes | Yes | Yes |
+| Streaming restore | OpenAI Chat and Responses, Anthropic Messages SSE | Yes | Yes (SSE) | Unclear per API | Unclear | Unclear |
+| Tool-call arguments | Real values for local tools; placeholders kept for web, shell and send-style tools and any call with a URL, by default; `tool_restore` allow/deny lists | Unclear | Unclear | Per-tool policy: unknown and network tools get pseudonyms | Restored for tools (LangChain middleware); per-tool policy unclear | Unclear |
+| On a scrub error | Fails closed (`503`) + egress re-check | Unclear | Unclear; documents a passthrough that forwards plaintext when masking is off or the app exits | Fails closed (`502`) + second guard | Unclear | Unclear |
+| APIs | OpenAI Chat and Responses, Anthropic Messages (JSON and streaming) | OpenAI Chat + Responses, Anthropic, Codex | OpenAI, DeepSeek, Anthropic | Anthropic Messages, OpenAI Chat + Responses, Bedrock, Vertex, more | OpenAI and Anthropic connectors; LangChain, Pydantic AI, LlamaIndex, Claude Code integrations | OpenAI; Anthropic named in its diagram |
+| Beyond text | No; [hooks](#hooks) for spend caps and local fallback | Browser extension, dashboard, route-to-local-LLM mode | Image/PDF OCR redaction, browser extension, dashboard | Encrypted vault, DB seeding, shell-safe escaping, MCP DB tool | Agent-framework middleware, chat UI example | Desktop UI, Chrome extension |
 
 **Where swapback fits:** you want something small you can read in an afternoon, that never needs a model, restores
-the exact original text for any agent's tools, and blocks rather than leaks. **Where others are stronger:** names you
-never listed (PasteGuard, Maskit and Veil's NER), more APIs and streaming formats (all three), images and documents
-(Maskit), and coding-agent hardening such as escaping restored values for shells (Veil).
+the exact original text where your tools need it, keeps placeholders where a tool could send it out, and blocks rather than leaks. **Where others are stronger:** names you
+never listed (PasteGuard, Maskit and Kiji, and the optional NER in Veil and piighost), more APIs and streaming formats (all three), images and documents
+(Maskit), coding-agent hardening such as escaping restored values for shells (Veil), framework middleware
+(piighost) and a desktop app (Kiji).
 
 [pg]: https://github.com/sgasser/pasteguard
 [pg-mask]: https://pasteguard.com/docs/concepts/mask-mode
 [pg-sem]: https://github.com/sgasser/pasteguard#how-detection-works
 [mk]: https://github.com/xiaYuTian11/maskit
 [vl]: https://github.com/lemonadesaltbagel/veil
+[ph]: https://github.com/Athroniaeth/piighost
+[kj]: https://github.com/dataiku/kiji-proxy
 
 ## Limits
 
