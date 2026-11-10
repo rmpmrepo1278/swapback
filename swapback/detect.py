@@ -19,7 +19,7 @@ _ESC = re.compile(r"\\[nrt]")     # JSON-style escapes inside tool output, blank
 
 def lower_same_len(text):
     low = text.lower()
-    return low if len(low) == len(text) else "".join(c if len(c.lower()) != 1 else c.lower() for c in text)
+    return low if len(low) == len(text) else "".join(c.lower()[:1] or c for c in text)     # \u0130 -> i
 
 
 def _automaton(words):

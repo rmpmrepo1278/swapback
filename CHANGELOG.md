@@ -3,6 +3,44 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.10] - 2026-11-10
+
+Fixes from independent review #10.
+
+### Fixed
+- **A restored value came back changed when an HTML tag with a quoted attribute sat between its parts** (review: 6 of
+  6 targeted shapes, 27 of 1,296 layout replies, 43 of 200 menus with a listed pair). Inside a JSON string the span was
+  kept as written, `\"` included, and the restore escaped it again for the JSON level, so `<div dir="ltr">` between
+  the lines of a listed address came back as `<div dir=\\\"ltr\\\">`; the JSON still parsed, the bytes did not match.
+  A value found in escaped JSON is now kept unescaped once per JSON level it sits in, and where the placeholder comes
+  back at that same level the span returns exactly as it was written. Repro: list
+  `27 Gallowgate Mews\nUnit 9\nBurlington, VT 05401` and send `json.dumps({"html": '<div dir="ltr">27 Gallowgate
+  Mews</div><div dir="ltr">Unit 9</div><div dir="ltr">Burlington, VT 05401</div>'})`: the echo matches byte for byte.
+  Side effect: a JSON-escaped value (`S\u00f8ren`) restored at the level it was sent at now comes back as written,
+  not decoded (`Søren` where it is reused in prose); the 0.4.2 test that expected the decoded spelling was changed.
+- **Dictionary-word names in one-word cells leaked when the HTML inside JSON was escaped** (review: 120 of 140 per
+  encoding). The cell rule read the text around the pair as written, so `\u003ctd\u003e` (Go), `<\/td>` (PHP) and
+  `&lt;td&gt;` (entities) never looked like cells. It now reads that text decoded, the way the matcher already reads
+  the pair itself; the restore gives the escaped cells back exactly. Repro: list `Amber Lane`, send
+  `json.dumps({"html":"<tr><td>Amber</td><td>Lane</td><td>Tucson</td></tr>"})` with `<`/`>` written as
+  `\u003c`/`\u003e`.
+- **A name swapped out of table cells came back with the tags between its words wherever the model reused it**
+  ("Dear «PERSON_12»" became "Dear Amber</td><td>Lane"). A value that spans separate HTML blocks and had a tag right
+  before it is now put back as written only where a tag comes right before the placeholder in the reply too; elsewhere
+  the listed value comes back ("Dear Amber Lane", `"to_name": "Amber Lane"`). Streamed replies carry the text before
+  the placeholder across chunks.
+- **A listed name with a capital dotted I (Turkish `İ`) was blocked on every request.** Its lower case is two
+  characters, so the matcher's key and the text never met while the re-check still saw the name. `İ` now lowers to
+  `i` on both sides; the name is swapped, in Title Case, ALL-CAPS, lower case and inside JSON (escaped or raw).
+- **An address quoted with `> ` at the start of each line was blocked.** The matcher also reads text with the quote
+  markers removed (also inside JSON), so a quoted reply is swapped and restored as written.
+- **Many copies of a listed value in one long JSON string slowed down quadratically** (review: 774 KB, no answer in
+  150 s). Finding the JSON level of each placeholder re-read the whole string so far; a string that does not start like
+  JSON is now known to be one level at once. 9,000 copies in one string: 88.6 s on 0.4.9, 0.4 s now.
+- README: "byte-exact" says exactly which cases come back as the same value in another spelling; the cell rule names
+  the escaped HTML it reads; the out-of-scope note gives a `{"first": "Amber", "last": "Lane"}` example; about 5,400
+  lines (276 KB).
+
 ## [0.4.9] - 2026-11-10
 
 Fixes from independent review #9.

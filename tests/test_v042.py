@@ -65,9 +65,16 @@ def test_escaped_spellings_are_swapped_and_restored_decoded(tmp_path, text):
 
 
 def test_restore_gives_the_decoded_spelling(tmp_path):
+    # 0.4.10: where the placeholder comes back at the JSON level it was sent at, the span returns exactly as written
+    # (\u00f8 stays \u00f8: byte-exact); reused outside JSON it comes back as the decoded spelling
     s = _scr(tmp_path, known=[(NAME, "PERSON")])
     out, back = _round(s, json.dumps({"name": NAME}))
-    assert back == '{"name": "%s"}' % NAME
+    assert back == json.dumps({"name": NAME})
+    fo = c.Forms()
+    body = {"messages": [{"role": "tool", "tool_call_id": "t", "content": json.dumps({"name": NAME})}]}
+    s.scrub_request(body, forms=fo)
+    ph = c.PH_RE.search(body["messages"][-1]["content"]).group(0)
+    assert s.restore_text("Hi " + ph, forms=fo) == "Hi " + NAME
 
 
 def test_egress_check_decodes_escapes_before_checking(tmp_path, monkeypatch):
