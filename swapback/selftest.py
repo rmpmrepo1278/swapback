@@ -63,7 +63,7 @@ REVIEW7_DEEP = ["2219 Larkspur Hollow Road\nSuite 410\nBoise, ID 83702", "Odile\
 REVIEW7_KNOWN = [(REVIEW7_DEEP[0], "ADDRESS"), ("Odile Marchetti", "PERSON"), ("S\u00f8ren \u00c5lund", "PERSON"),
                  ("Grace Fields", "PERSON")]
 REVIEW7_NAME_TEXTS = [("Saving Grace. Fields of gold are lovely.", "untouched"),
-                      ("<div>Grace</div>\n<div>Fields</div>\n<div>Pricing</div>", "untouched"),
+                      ("<div>Grace</div>\n<div>Fields</div>\n<div>Pricing</div>", "swapped"),   # 0.4.9: joined
                       ("<p>Grace</p><p>Fields of gold</p>", "untouched"),
                       ("Amazing Grace!\n\nFields of barley.", "untouched"), ("Ask Grace Fields today.", "swapped"),
                       ("<b>Grace</b> Fields", "swapped"), ("Grace<br>Fields", "swapped")]
@@ -77,6 +77,29 @@ REVIEW8_CELLS = [("<table><tr><td>Hazel</td><td>Woods</td></tr></table>", "swapp
                  ("<h2>Summer</h2><p>Lake trips are the best part of the year.</p>", "untouched"),
                  ("<li>Summer sale</li><li>Lake view rooms</li>", "untouched"),
                  ("Customer: Hazel. Woods is her surname.", "not swapped")]
+# review #9 (0.4.9): a listed dictionary-word name split across one-word cells/blocks anywhere in a row or list (third
+# cell after it, header row, leading id or word cell, pretty-printed, attributes, two rows, three items), the note's
+# example placeholders never assigned, a broken known file reported as broken YAML
+REVIEW9_KNOWN = [("Holly Marsh", "PERSON"), ("Jasper Stone", "PERSON"), ("Thomasina Wexley", "PERSON"),
+                 ("l.varga@quillfeather.example", "EMAIL")]
+REVIEW9_LAYOUTS = ["<tr><td>{F}</td><td>{L}</td></tr>", "<tr><td>{F}</td><td>{L}</td><td>Denver</td></tr>",
+                   "<tr><td>{F}</td><td>{L}</td><td>CO</td></tr>", "<tr><td>{F}</td><td>{L}</td><td>Manager</td></tr>",
+                   "<tr><td>{F}</td><td>{L}</td><td>Engineering</td></tr>",
+                   "<tr><td>{F}</td><td>{L}</td><td>{f}.{l}@acme.example</td></tr>",
+                   "<tr><td>{F}</td><td>{L}</td><td>42</td></tr>", "<tr><td>{F}</td><td>{L}</td><td>New York</td></tr>",
+                   "<table><tr><th>First</th><th>Last</th><th>City</th></tr><tr><td>{F}</td><td>{L}</td><td>Denver</td></tr></table>",
+                   "<table><thead><tr><th>First</th><th>Last</th></tr></thead><tbody><tr><td>{F}</td><td>{L}</td></tr></tbody></table>",
+                   "<tr><td>17</td><td>{F}</td><td>{L}</td><td>Denver</td></tr>", "<tr><td>Active</td><td>{F}</td><td>{L}</td></tr>",
+                   "<tr>\n  <td>{F}</td>\n  <td>{L}</td>\n  <td>Denver</td>\n</tr>",
+                   "<tr><td class=\"first\">{F}</td><td class=\"last\">{L}</td><td class=\"city\">Denver</td></tr>",
+                   "<table><tr><td>{F}</td><td>{L}</td><td>Denver</td></tr><tr><td>Rob</td><td>Lee</td><td>Austin</td></tr></table>",
+                   "<ul><li>{F}</li><li>{L}</li><li>Engineering</li></ul>", "<div>{F}</div><div>{L}</div><div>Boston</div>",
+                   "<div>Owner</div><div>{F}</div><div>{L}</div>", "<p>{F}</p><p>{L}</p>", "<span>{F}</span> <span>{L}</span>",
+                   "<tr><td>{F}</td><td>{LU}</td></tr>"]
+REVIEW9_ORDINARY = ["<ul><li>Home</li><li>Holly</li><li>Stone</li><li>Pricing</li></ul>",
+                    "<table><tr><td>Rob</td><td>Holly</td></tr><tr><td>Marsh</td><td>Lee</td></tr></table>",
+                    "<tr><td>Jasper</td><td>Marsh</td><td>Denver</td></tr>", "<nav><div>Stone</div><div>Jasper</div></nav>",
+                    "<p>Holly</p><p>Marsh walks are lovely in May.</p>"]
 
 
 def _fold(s):
@@ -678,6 +701,56 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             except c.ScrubError:
                 got = "blocked"
             res["cells_ok"] += got == want or (want == "not swapped" and got != "swapped")
+        # review #9: the listed dictionary-word name in one-word cells/blocks wherever it sits in the row or list
+        r9 = c.Scrubber(dict(c.DEFAULTS, mode="on", state_dir=os.path.join(d, "r9")), known=list(REVIEW9_KNOWN))
+        res["r9_cells"] = res["r9_cells_ok"] = 0
+        for lt in REVIEW9_LAYOUTS:
+            for fw, lw in (("Holly", "Marsh"), ("Jasper", "Stone"), ("Thomasina", "Wexley")):
+                txt = lt.format(F=fw, L=lw, f=fw.lower(), l=lw.lower(), LU=lw.upper())
+                for shape in ("chat", "tool", "email"):
+                    if shape == "chat":
+                        content = txt
+                    elif shape == "tool":
+                        content = json.dumps({"body_html": txt})
+                    else:
+                        content = json.dumps({"messages": [{"id": "m1", "body_html": "<html><body><p>Hi,</p>" + txt
+                                                            + "<p>Thanks</p></body></html>"}]})
+                    body = {"messages": [{"role": "user", "content": "read"},
+                                         {"role": "tool", "tool_call_id": "c", "content": content}]}
+                    res["r9_cells"] += 1
+                    try:
+                        r9.scrub_request(body)
+                    except c.ScrubError:
+                        continue
+                    sent = body["messages"][-1]["content"]
+                    res["r9_cells_ok"] += not (re.search(r"(?<![A-Za-z])%s(?![A-Za-z])" % fw, sent, re.I)
+                                               and re.search(r"(?<![A-Za-z])%s(?![A-Za-z])" % lw, sent, re.I))
+        for txt in REVIEW9_ORDINARY:              # one-word blocks that do not spell a listed name, inside one row/list
+            body = {"messages": [{"role": "user", "content": txt}]}
+            res["r9_cells"] += 1
+            try:
+                r9.scrub_request(body)
+                res["r9_cells_ok"] += body["messages"][-1]["content"] == txt
+            except c.ScrubError:
+                pass
+        # the note's example placeholders are slot 0, never assigned, so a model copying them gets no real value back
+        res["r9_note"] = res["r9_note_ok"] = 0
+        fo9 = c.Forms()
+        r9.scrub_request({"messages": [{"role": "user", "content": "Holly Marsh, Jasper Stone and Thomasina Wexley "
+                                                                   "wrote to l.varga@quillfeather.example"}]}, forms=fo9)
+        ex = re.findall(c.L + r"[A-Z]+_\d+" + c.R, c.DEFAULTS["system_note"])
+        res["r9_note"] += 2
+        res["r9_note_ok"] += bool(ex) and all(x.endswith("_0" + c.R) for x in ex)
+        back9 = r9.restore_text("You wrote %s per the note." % " and ".join(ex), forms=fo9)
+        res["r9_note_ok"] += back9 == "You wrote %s per the note." % " and ".join(ex)
+        res["r9_note"] += 1                       # a broken known file says its YAML is broken
+        bk = os.path.join(d, "broken_known.yaml")
+        with open(bk, "w") as f:
+            f.write("PERSON:\n  - [unclosed\n")
+        try:
+            c.load_known(bk)
+        except c.ScrubError as e:
+            res["r9_note_ok"] += "not valid YAML" in str(e) and "\n" not in str(e)
         # a bad listen value or a port already in use: one readable line (exit 2), not a traceback
         import socket, subprocess
         res["listen_errors"] = res["listen_errors_ok"] = 0
@@ -751,6 +824,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                        and res["config_errors_ok"] == res["config_errors"]
                        and res["mixed_args_ok"] == res["mixed_args"] and res["esc_text_ok"] == res["esc_text"]
                        and res["cells_ok"] == res["cells"] and res["listen_errors_ok"] == res["listen_errors"]
+                       and res["r9_cells_ok"] == res["r9_cells"] and res["r9_note_ok"] == res["r9_note"]
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
             print(json.dumps(res, ensure_ascii=False), file=out)
@@ -781,6 +855,8 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             print("  \\u00ab-escaped placeholders in text JSON restored: " + pct(res["esc_text_ok"], res["esc_text"]), file=out)
             print("  dictionary-word names in one-word HTML cells:      " + pct(res["cells_ok"], res["cells"]), file=out)
             print("  bad listen / port in use, one readable line:       " + pct(res["listen_errors_ok"], res["listen_errors"]), file=out)
+            print("  names in one-word cells anywhere in a row/list:    " + pct(res["r9_cells_ok"], res["r9_cells"]), file=out)
+            print("  example placeholders unassigned, broken YAML said: " + pct(res["r9_note_ok"], res["r9_note"]), file=out)
             print("  200 KB %%XX body checked in:                       %.2f s" % res["large_body_seconds"], file=out)
             print("  health: blocked when the list breaks, known count: " + pct(res["health_ok"], res["health_checks"]), file=out)
             if res["decoded_round_trips"]:

@@ -497,8 +497,9 @@ def main(argv=None):
         print("swapback: error: %s. Fix the config file, then start again." % e, file=sys.stderr, flush=True)
         sys.exit(2)
     except S.ScrubError as e:                    # a missing/broken known file at startup: one readable line, no traceback
-        print("swapback: error: %s. Fix the path in your config (or run `swapback init`), then start again." % e,
-              file=sys.stderr, flush=True)
+        hint = ("Fix the path in your config (or run `swapback init`)" if "missing" in str(e)
+                else "Fix that file" if "not valid YAML" in str(e) else "Fix the file or the path in your config")
+        print("swapback: error: %s. %s, then start again." % (e, hint), file=sys.stderr, flush=True)
         sys.exit(2)
     h, p = srv.server_address[:2]
     print(json.dumps({"listening": "%s:%s" % (h, p), "mode": CFG["mode"], "known": SCR.known_count(),

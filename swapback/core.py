@@ -48,7 +48,7 @@ DEFAULTS = {"mode": "on", "listen": "127.0.0.1:8787", "upstream": "https://api.o
             "log_requests": True, "restore_bare": True, "patterns": {}, "phone_regions": ["US"],
             "url_swap": ["linkedin.com/in/"], "extra_secret_rules": "", "cache_items": 4000, "canary_model": "",
             "upstream_timeout_s": 900, "common_names_title_case": True,
-            "system_note": "Note: values written like \u00abPERSON_3\u00bb or \u00abEMAIL_1\u00bb are privacy stand-ins that the "
+            "system_note": "Note: values written like \u00abPERSON_0\u00bb or \u00abEMAIL_0\u00bb are privacy stand-ins that the "
                            "user's own device swaps back to the real value. Use them exactly as written, including in "
                            "tool arguments, and do not mention them."}
 ENV = {"mode": "SWAPBACK_MODE", "listen": "SWAPBACK_LISTEN", "upstream": "SWAPBACK_UPSTREAM",
@@ -438,39 +438,20 @@ _BLOCK_TAG_END = re.compile(_BLOCK_TAG.pattern + r"$", re.I)
 def _cell_name(surface, value, before, after):
     """a dictionary-word name whose words each fill one HTML block element of their own (a first/last-name table
     row <td>Hazel</td><td>Woods</td>, list items, divs): every block holds exactly one word, those words joined are
-    the listed name, and the run of one-word blocks ends there (a row or list boundary, or a neighbouring block that
-    is not one more capitalised word: a menu <div>Grace</div><div>Fields</div><div>Pricing</div> stays as written)."""
+    the listed name, and no row or list boundary (</tr>, </ul>, </table> ...) sits between them. Where the pair sits
+    in the row, what the cells around it hold, their attributes and the whitespace between them do not matter."""
     words = [w for w in (_CELL_GAP.sub(" ", x).strip() for x in _BLOCK_TAG.split(surface)) if w]
     want = value.split()
     if len(words) < 2 or any(" " in w for w in words) or [w.lower() for w in words] != [w.lower() for w in want]:
         return False
+    if _RUN_EDGE.search(surface):
+        return False
     b = _CELL_GAP.sub(" ", before[-300:]).rstrip()
     a = _CELL_GAP.sub(" ", after[:300]).lstrip()
-    if not (_BLOCK_TAG_END.search(b) and _BLOCK_TAG.match(a)):
-        return False
-    return _run_ends(a, False) and _run_ends(b, True)
+    return bool(_BLOCK_TAG_END.search(b) and _BLOCK_TAG.match(a))
 
 
 _RUN_EDGE = re.compile(r"</?(?:tr|ul|ol|table|tbody|thead|dl|section|article|header|footer)\b", re.I)
-_ONE_CAP_WORD = re.compile(r"[^\W\d_][^\W\d_'\u2019-]*")
-
-
-def _run_ends(side, backward):
-    """the text beside a run of one-word blocks (block tags first): True at a row/list boundary, at the end of the
-    text, or when the next block's text is not a single capitalised word."""
-    tags = []
-    while side:
-        m = _BLOCK_TAG_END.search(side) if backward else _BLOCK_TAG.match(side)
-        if not m:
-            break
-        tags.append(m.group(0))
-        side = (side[:m.start()] if backward else side[m.end():])
-        side = side.rstrip() if backward else side.lstrip()
-    if any(_RUN_EDGE.match(t) for t in tags) or not side:
-        return True
-    k = side.rfind(">") if backward else side.find("<")
-    nxt = (side[k + 1:] if backward else side[:k if k != -1 else len(side)]).strip()
-    return not (_ONE_CAP_WORD.fullmatch(nxt) and nxt[:1].isupper())
 
 
 def _name_break(surface, value, before=None, after=None):
@@ -748,6 +729,10 @@ def load_known(path):
             d = yaml.safe_load(f) or {}
     except FileNotFoundError:
         raise ScrubError("configured file is missing: %s" % os.path.basename(path)) from None
+    except yaml.YAMLError as e:
+        mk = getattr(e, "problem_mark", None)
+        raise ScrubError("known_file %s is not valid YAML%s" % (
+            os.path.basename(path), " (line %d, column %d)" % (mk.line + 1, mk.column + 1) if mk else "")) from None
     except Exception as e:
         raise ScrubError("known_file unreadable: %s" % type(e).__name__) from None
     if isinstance(d, dict) and "known" in d:
@@ -948,6 +933,10 @@ def build_private_terms(path):
     try:
         with open(path, encoding="utf-8") as f:
             d = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        mk = getattr(e, "problem_mark", None)
+        raise ScrubError("private_terms_file %s is not valid YAML%s" % (
+            os.path.basename(path), " (line %d, column %d)" % (mk.line + 1, mk.column + 1) if mk else "")) from None
     except Exception as e:
         raise ScrubError("private_terms_file unreadable: %s" % type(e).__name__) from None
     rules, by, bad = [], {}, 0

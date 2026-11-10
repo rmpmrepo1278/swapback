@@ -3,6 +3,29 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.9] - 2026-11-10
+
+Fixes from independent review #9.
+
+### Fixed
+- **A listed dictionary-word name split across one-word table cells or blocks still leaked in most real layouts**
+  (review: 13 of 21 layouts leaked 18 of 18 requests, `<p>` blocks in an email 6 of 18). 0.4.8 swapped the pair only
+  when the run of one-word blocks ended right there, so a third one-word cell (`Denver`, `CO`, `Manager`), a
+  First/Last/City header row, a leading id or word cell (`Active`, `Owner`), pretty-printed rows, `class=` attributes,
+  two data rows or three `<li>`/`<div>` items kept it as written. Now any two neighbouring one-word `<td>`/`<th>`/`<li>`/
+  `<div>`/`<p>` blocks whose words are the listed name are swapped, wherever the pair sits in the row or list, whatever
+  the attributes or whitespace; not across a row or list boundary. Measured on 1,580 ordinary one-word-block requests
+  (menus, navigation, tables of ordinary words) without a listed pair: 0 touched before and after. A listed pair
+  that appears as ordinary words (a menu `<div>Grace</div><div>Fields</div><div>Pricing</div>`) is now swapped; the
+  0.4.7/0.4.8 tests that expected it left alone were changed.
+- **The system note's example placeholders were real slots.** It showed `«PERSON_3»` and `«EMAIL_1»`, so a model
+  that copied the example got a real listed person's name and email put into the reply. It now shows `«PERSON_0»`
+  and `«EMAIL_0»`; slot numbers start at 1, so these are never assigned and come back as written.
+- **A known file (or private terms file) with broken YAML said "Fix the path".** It now says the file is not valid
+  YAML, with the line and column.
+- README: what happens to a missing known file is stated exactly (the proxy refuses to start, exit code 2; a file
+  that goes missing while it runs gets `503`s); the line count is now about 5,200 lines (260 KB).
+
 ## [0.4.8] - 2026-11-10
 
 Fixes from independent review #8 against the launch bar.

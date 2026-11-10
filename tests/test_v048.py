@@ -136,7 +136,6 @@ def test_review8_one_word_cells_swapped(tmp_path, text, gone):
     "<td>Hazel</td><td>Woods and forests</td>",
     "<li>Summer sale</li><li>Lake view rooms</li>",
     "Saving Grace. Fields of gold.",
-    "<div>Grace</div>\n<div>Fields</div>\n<div>Pricing</div>",
 ])
 def test_review8_ordinary_blocks_untouched(tmp_path, text):
     s = _scr(tmp_path)
