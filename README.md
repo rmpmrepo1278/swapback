@@ -10,7 +10,7 @@
   <a href="https://github.com/rmpmrepo1278/swapback/actions/workflows/tests.yml"><img src="https://github.com/rmpmrepo1278/swapback/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
   <a href="https://github.com/rmpmrepo1278/swapback/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://pypi.org/project/swapback/"><img src="https://img.shields.io/pypi/pyversions/swapback.svg" alt="Python versions"></a>
-  <a href="https://pypistats.org/packages/swapback"><img src="https://img.shields.io/pypi/dm/swapback.svg" alt="Downloads per month"></a>
+  <a href="https://pepy.tech/projects/swapback"><img src="https://static.pepy.tech/badge/swapback" alt="Downloads"></a>
 </p>
 
 <p align="center">
@@ -24,14 +24,18 @@
 ## Quickstart
 
 ```bash
-pip install swapback      # Python 3.11+
-swapback demo             # fake model, made-up data, no key, no network
-swapback init && swapback-proxy    # then point your client at http://127.0.0.1:8787
+pip install swapback
+swapback demo
+swapback init && swapback-proxy
 ```
+
+Python 3.11 or newer. `swapback demo` runs a fake model with made-up data: no key, no network. The proxy listens on
+`127.0.0.1:8787`; point your client at it and change nothing else:
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="sk-...")   # only the host changes
+client = OpenAI(
+    base_url="http://127.0.0.1:8787/v1")
 ```
 
 ### Set it up for a real provider
