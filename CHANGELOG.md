@@ -3,6 +3,41 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.6] - 2026-11-10
+
+Fixes from independent review #6 against the launch bar.
+
+### Security
+- **Later lines of a listed multi-line address leaked when its lines were joined by an HTML tag plus a line break
+  inside JSON text** (`<br>\n`, `<br />\n`, `<br/>\r\n`, `</p>\n<p>` in a `json.dumps` tool result, an HTML mail body,
+  tool-call arguments in the history; review: 32 of 120 leaked, 48 blocked). The street-address pattern swapped the
+  street line first, so the listed value no longer matched whole. Now: HTML tags are read as line breaks in the
+  decoded (escaped) views too, a listed value or private term claims its span before the pattern detectors (a pattern
+  hit that cuts into one is dropped), and the egress re-check also reads each string with only listed values swapped,
+  so a listed value a pattern swap cut into is blocked rather than sent. Review repro: 120/120 swapped, 0 leaked, 0
+  blocked.
+- **A listed value 4 JSON string levels deep leaked** (a literal `\n` inside JSON inside JSON inside JSON; 2 review
+  requests). The matcher and the skeleton re-check now decode up to 8 levels (was 3 and 5); each level is a linear pass
+  over shorter text.
+
+### Fixed
+- **Placeholders the model wrote ASCII-escaped inside a JSON string inside tool-call arguments were not restored**
+  (`{"nested": "{\"a\": \"\\u00abPERSON_2\\u00bb\"}"}`; 50/50 in review #6, also in 0.4.4). Each extra JSON level
+  doubles the backslashes; the restore reads the level from them and escapes the value for it, in OpenAI arguments,
+  Anthropic `tool_use` input (plain and streamed) and Responses, so both JSON levels stay valid.
+
+### Docs
+- README: dictionary-word names match in Title Case only (the "or capitals" claim was not true by default; ALL-CAPS
+  needs `common_names_all_caps: true`); package size corrected to about 4,750 lines (230 KB); escape depth 8 levels;
+  tag-plus-line-break joins; selftest numbers for 0.4.6.
+- `swapback selftest` adds a listed multi-line address with tag-plus-line-break joins (7 paths, json.dumps tool
+  results, tool-call arguments in the history, a literal `\n` 4 levels deep) and doubly escaped tool-argument
+  placeholders; tests/test_v046.py carries every review #6 repro.
+
+### Not changed
+- A CamelCase run of a listed dictionary-word name (`HunterStone`) is still swapped as the name: not matching it would
+  open a leak for a name written as a handle, so it stays a known false swap.
+
 ## [0.4.5] - 2026-11-10
 
 Fixes from independent review #5 against the launch bar.

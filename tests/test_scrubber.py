@@ -106,7 +106,7 @@ def test_fail_closed_on_error(sc, monkeypatch):
 
 
 def test_fail_closed_egress_leftover(sc, monkeypatch):
-    monkeypatch.setattr(sc, "scrub_text", lambda t, c=None, f=None: t)          # a broken swap
+    monkeypatch.setattr(sc, "_scrub", lambda t, c=None, f=None: (t, None))  # a broken swap
     with pytest.raises(s.ScrubError, match="egress"):
         sc.scrub_request({"messages": [{"role": "user", "content": "Jane Q Doe"}]})
 
@@ -888,7 +888,7 @@ def test_all_variants_in_one_text_round_trip(sc2):
 
 @pytest.mark.parametrize("v", VARIANTS)
 def test_variant_that_slips_is_blocked(sc2, monkeypatch, v):
-    monkeypatch.setattr(sc2, "scrub_text", lambda t, c=None, f=None: t)       # a broken swap
+    monkeypatch.setattr(sc2, "_scrub", lambda t, c=None, f=None: (t, None))  # a broken swap
     with pytest.raises(s.ScrubError, match="egress"):
         sc2.scrub_request({"messages": [{"role": "user", "content": "hi " + v}]})
 

@@ -35,7 +35,9 @@ L, R = "\u00ab", "\u00bb"
 TYPES = ("PRIVATE_FIGURE", "PRIVATE_TERM", "PERSON", "EMAIL", "PHONE", "ADDRESS", "SSN", "CARD", "IBAN", "ACCOUNT", "DOB",
          "ORDER", "IP", "HOST", "SECRET", "PROFILE", "ORG", "ID", "FAMILY")
 PH_RE = re.compile(L + r"([A-Z]+(?:_[A-Z]+)*)_(\d+)" + R)
-JS_PH_RE = re.compile(r"\\u00[aA][bB]([A-Z]+(?:_[A-Z]+)*)_(\d+)\\u00[bB][bB]")    # «» escaped inside JSON text
+JS_PH_RE = re.compile(r"(\\+)u00[aA][bB]([A-Z]+(?:_[A-Z]+)*)_(\d+)\1u00[bB][bB]")    # «» escaped inside JSON text
+# (\u00ab: one JSON string level; \\u00ab: two, JSON inside JSON; 2**(n-1) backslashes: n levels)
+MATCH_DEPTH = 8             # escape levels the matcher and the egress re-check decode (JSON inside JSON inside ...)
 BARE_RE = re.compile(r"(?<![A-Za-z0-9_" + L + r"])(" + "|".join(TYPES) + r")_(\d+)(?![0-9A-Za-z_" + R + r"])")
 CANARY = [("Zorblat Quenneville", "PERSON"), ("zorblat.canary@example.org", "EMAIL")]   # fake, used by `canary`
 DEFAULTS = {"mode": "on", "listen": "127.0.0.1:8787", "upstream": "https://api.openai.com", "allow_remote": False,
@@ -403,6 +405,36 @@ def _tag_view(text):
     return "".join(out), starts
 
 
+def _listed_first(sp):
+    """spans_keyed entries minus pattern-detector hits (priority 1) that cut into a listed value or private term
+    (priority 0) without covering it whole: a listed value is swapped as one piece, so the street line that the
+    address pattern also sees cannot split a listed multi-line address and leave its later lines behind."""
+    claimed = sorted((x[0], x[1]) for x in sp if x[3] == 0)
+    if not claimed or len(claimed) == len(sp):
+        return sp
+    import bisect
+    starts = [a for a, _b in claimed]
+    longest = max(b - a for a, b in claimed)
+    out = []
+    for x in sp:
+        if x[3] == 0:
+            out.append(x)
+            continue
+        s, e = x[0], x[1]
+        k, cut = bisect.bisect_left(starts, e), False
+        while k > 0:
+            k -= 1
+            a, b = claimed[k]
+            if a < s - longest:
+                break
+            if b > s and not (s <= a and b <= e):
+                cut = True
+                break
+        if not cut:
+            out.append(x)
+    return out
+
+
 def match_views(text):
     """[(view, index map back to text, surface(s, e))]: the normalized text, each decoded view (decoded_views) and each
     decoded view normalized. surface: the spelling a hit at view[s:e] is restored as — None when the view is only a
@@ -416,12 +448,15 @@ def match_views(text):
     if "<" in text and _HTML_TAG.search(text):
         d, st = _tag_view(text)
         views.append((d, st, lambda s, e: None))
-    for d, m in decoded_views(text):
+    for d, m in decoded_views(text, depth=MATCH_DEPTH):
         views.append((d, m, lambda s, e, d=d: d[s:e]))
         if _NORM_HINT.search(d):
             nd, st = _normalize(d)
             if nd != d:
                 views.append((nd, [m[j] for j in st], lambda s, e, d=d, st=st: d[st[s]:st[e]]))
+        if "<" in d and _HTML_TAG.search(d):       # "Lane<br />\nUnit 12C" in JSON text: decoded, tags as line breaks
+            td, st = _tag_view(d)
+            views.append((td, [m[j] for j in st], lambda s, e, d=d, st=st: d[st[s]:st[e]]))
     return views
 
 
@@ -1224,6 +1259,7 @@ class Scrubber:
                 if e <= s or not _valid(t, v):
                     continue
                 sp.append((s, e, t, 1, v, None))
+        sp = _listed_first(sp)
         sp.sort(key=lambda x: (x[0], x[3], -(x[1] - x[0])))
         res, last = [], -1
         for s, e, t, pr, v, key in sp:
@@ -1237,8 +1273,14 @@ class Scrubber:
 
     def scrub_text(self, text, counts=None, forms=None):
         """forms: a Forms object that records the surface form behind each placeholder (for exact restore)."""
+        return self._scrub(text, counts, forms)[0]
+
+    def _scrub(self, text, counts=None, forms=None):
+        """(scrubbed text, the same text with only listed values and private terms swapped, or None when no pattern
+        detector swapped anything). The second feeds the egress re-check: a listed value that a pattern swap cut into
+        (so the scrubbed text no longer shows it whole) is still seen there, and the request is blocked, not sent."""
         if not text or len(text) < 3:
-            return text
+            return text, None
         h = hashlib.blake2b(text.encode("utf-8", "surrogatepass"), digest_size=16).digest()
         c = self.cache.get(h)
         if c is not None:
@@ -1248,13 +1290,18 @@ class Scrubber:
             if forms is not None:
                 for ph, v in c[2]:
                     forms.add(ph, v)
-            return c[0]
-        out, pos, local, phs = [], 0, {}, []
+            return c[0], c[3]
+        out, pos, local, phs, und, pat = [], 0, {}, [], [], False
         for s, e, t, v, key in self.spans_keyed(text):
             out.append(text[pos:s])
             sv = text[s:e] if key is None else v          # a listed value found in escaped text keeps its decoded form
             ph = self.placeholder(sv, t, *(key or ()))   # pattern hits: the vault keeps the surface form (fix2)
             out.append(ph)
+            # a pattern hit that holds a whole listed value ("jane [at] example [dot] com") stays swapped here; one
+            # that holds only part of one (the street line of a listed address) is put back for the re-check
+            back = key is None and not self.skeleton_hits(text[s:e])
+            und += [text[pos:s], text[s:e] if back else ph]
+            pat = pat or back
             phs.append((ph, sv))
             if forms is not None:
                 forms.add(ph, sv)
@@ -1262,14 +1309,15 @@ class Scrubber:
             pos = e
         out.append(text[pos:])
         r = "".join(out)
+        u = "".join(und) + text[pos:] if pat else None
         if len(self.cache) > int(self.cfg.get("cache_items", 4000)):
             self.cache.clear()
             self.verified.clear()
-        self.cache[h] = (r, local, tuple(phs))
+        self.cache[h] = (r, local, tuple(phs), u)
         if counts is not None:
             for t, n in local.items():
                 counts[t] = counts.get(t, 0) + n
-        return r
+        return r, u
 
     def leftover_known(self, text):
         """egress check: known values still present (count only), also in the decoded form of escaped text, so a
@@ -1366,7 +1414,7 @@ class Scrubber:
         """[(TYPE, key)] listed values the skeleton re-check finds in text or in any decoded view of it."""
         if not text or len(text) < 6 or not (getattr(self, "sk_ents", None) or getattr(self, "sk_cores", None)):
             return []
-        out, views = [], [text] + [d for d, _m in decoded_views(text, depth=5)]
+        out, views = [], [text] + [d for d, _m in decoded_views(text, depth=MATCH_DEPTH)]
         views += [_HTML_TAG.sub(" ", v) for v in views if "<" in v and ">" in v]    # <br>-joined lines, tagged parts
         for view in views:
             out += self._sk_scan(skeleton_text(view))
@@ -1499,10 +1547,13 @@ class Scrubber:
             if isinstance(o, list):
                 return [walk(x, key, parent) for x in o]
             if isinstance(o, str):
-                s = self.scrub_text(o, counts, forms)
-                h = hashlib.blake2b(s.encode("utf-8", "surrogatepass"), digest_size=16).digest()
+                s, u = self._scrub(o, counts, forms)
+                h = hashlib.blake2b((s if u is None else s + "\x00" + u).encode("utf-8", "surrogatepass"),
+                                    digest_size=16).digest()
                 if h not in self.verified:
                     n = self.leftover_known(s)
+                    if not n and u is not None:             # a listed value a pattern swap cut into: still blocked
+                        n = len(self.skeleton_hits(u))
                     left[0] += n
                     if not n:
                         self.verified.add(h)
@@ -1576,12 +1627,14 @@ class Scrubber:
             jst = (jstate.copy() if jstate is not None else JsonStrState())
         if js and "\\u00" in text:
             def rep_js(m):
-                v = self._val(f"{L}{m.group(1)}_{m.group(2)}{R}", True, forms)
+                n = len(m.group(1))                 # \u00ab..: JSON inside JSON, escaped once more per level
+                one = n & (n - 1) == 0
+                v = self._val(f"{L}{m.group(2)}_{m.group(3)}{R}", n.bit_length() if one else 1, forms)
                 if v is None:
                     return m.group(0)
                 if stats is not None:
                     stats["restored"] = stats.get("restored", 0) + 1
-                return v
+                return v if one else m.group(1)[:-1] + v
             text = JS_PH_RE.sub(rep_js, text)
         if self.cfg.get("restore_bare", True):
             cur2 = text
@@ -1629,7 +1682,7 @@ class Scrubber:
         if isinstance(o, list):
             return [self.restore_obj(x, stats, key, forms) for x in o]
         if isinstance(o, str):
-            return self.restore_text(o, js=(key == "arguments"), stats=stats, forms=forms)
+            return self.restore_text(o, js=(key == "arguments" or _escaped_json_doc(o)), stats=stats, forms=forms)
         return o
 
     def stream_restorer(self, js=False, stats=None, forms=None):
@@ -1745,6 +1798,26 @@ def _inner_depth(raw, left):
     return 1 + _inner_depth("".join(st.sbuf), left - 1)
 
 
+def _escaped_json_doc(s):
+    """a string value that is itself a JSON document carrying an ASCII-escaped placeholder (Anthropic tool_use input:
+    {"nested": "{\\"a\\": \\"\\u00abPERSON_1\\u00bb\\"}"}): restored as tool-call arguments are, escaped for JSON."""
+    if "\\u00" not in s or not JS_PH_RE.search(s) or s.lstrip()[:1] not in ("{", "["):
+        return False
+    try:
+        return isinstance(json.loads(s), (dict, list))
+    except ValueError:
+        return False
+
+
+def _back_bs(b, i):
+    """i moved back over the backslashes before it (at most 16): \\\\u00ab (a placeholder escaped for JSON inside JSON)
+    is cut whole, not between its backslashes."""
+    j = i
+    while j > 0 and i - j < 16 and b[j - 1] == "\\":
+        j -= 1
+    return j
+
+
 class StreamRestorer:
     """feed(chunk) -> text safe to emit now; a tail that may be a split placeholder waits for the next chunk."""
 
@@ -1758,10 +1831,10 @@ class StreamRestorer:
             off = len(b) - len(low)
             i = low.rfind("\\u00ab")
             if i != -1 and "\\u00bb" not in low[i:]:
-                return min(off + i, self._cut_plain(b))
+                return min(_back_bs(b, off + i), self._cut_plain(b))
             for k in range(5, 0, -1):               # a tail that may be the start of an escape: \ \u \u0 \u00 \u00a
                 if low.endswith("\\u00ab"[:k]):
-                    return min(len(b) - k, self._cut_plain(b))
+                    return min(_back_bs(b, len(b) - k), self._cut_plain(b))
         return self._cut_plain(b)
 
     def _cut_plain(self, b):

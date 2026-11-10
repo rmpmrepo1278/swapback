@@ -24,7 +24,8 @@ LISTED = {
     "PHONE": ["+1 503 555 0147", "(617) 555-0188", "+91 98450 12873", "07700 900417", "+61 491 570 006",
               "+49 30 90182047", "+33 6 12 34 56 78"],
     "ID": ["QQ 98 76 54 C", "PA-4471-9902", "GB82 WEST 1234 5698 7654 32", "4821 7735 9016"],
-    "ADDRESS": ["17 Example Mews, Dublin D04 X2Y1", "Rua das Flores 212, 4050-262 Porto", "742 Alder Court, Springfield, OR 97477"],
+    "ADDRESS": ["17 Example Mews, Dublin D04 X2Y1", "Rua das Flores 212, 4050-262 Porto", "742 Alder Court, Springfield, OR 97477",
+                "58 Wrenfield Lane\nUnit 4D\nAshby, OR 97009"],
 }
 NEGATIVES = [
     "I will hunt for the keys tonight.", "Will hunting season open early this year?", "Mark the bell schedule for Monday.",
@@ -53,6 +54,7 @@ UNLISTED = {"EMAIL": ["oskar.lindqvist@example.com"], "PHONE": ["(206) 555-0161"
 PATHS = ["chat", "chat_stream", "chat_tools", "anthropic_stream", "anthropic_tools", "responses_stream", "responses_tools"]
 
 
+HTML_JOINS = ["<br>\n", "<br />\n", "<br/>\r\n", "</p>\n<p>"]
 _ZW = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff\u00ad"))
 
 
@@ -92,8 +94,11 @@ def forms(v, t):
     if t == "ID":
         out.append(re.sub(r"[\s.\-]", "", v))
     if t == "ADDRESS":
-        out.append(v.replace(", ", "\n", 1))
-        out.append(v.replace(", ", "<br>"))            # lines joined by HTML line breaks
+        lines = v.split("\n") if "\n" in v else v.split(", ")
+        out.append(v.replace(", ", "\n", 1) if "\n" not in v else ", ".join(lines))
+        out.append("<br>".join(lines))                 # lines joined by HTML line breaks
+        for j in HTML_JOINS:                           # ... and by a tag plus a line break (an HTML mail body)
+            out.append(j.join(lines))
     out += encoded_forms(v, t)
     seen, res = set(), []
     for x in out:
@@ -144,10 +149,11 @@ def _needles(v, t):
         return [("digits", d.lstrip("0"))]
     if t in ("ID", "IBAN", "CARD", "SSN"):
         return [("alnum", re.sub(r"[^0-9a-z]", "", v.lower()))]
-    return [("text", " ".join(_fold(v).split(",")[0].split()))]
+    lines = [x for x in re.split(r"\n|, ", _fold(v)) if x.strip()]
+    return [("text", " ".join(x.replace(",", " ").split())) for x in (lines if "\n" in v else lines[:1])]   # every line of a multi-line one
 
 
-def _decodings(s, depth=3):
+def _decodings(s, depth=6):
     out, cur = [s], [s]
     for _ in range(depth):
         nxt = []
@@ -155,7 +161,8 @@ def _decodings(s, depth=3):
             for f in (html.unescape, urllib.parse.unquote, urllib.parse.unquote_plus,
                       lambda y: re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), y),
                       lambda y: re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), y),
-                      lambda y: y.replace("\\n", "\n").replace('\\"', '"')):
+                      lambda y: y.replace("\\n", "\n").replace('\\"', '"'),
+                      lambda y: re.sub(r"<[^<>]{0,40}>", " ", y)):
                 try:
                     z = f(x)
                 except Exception:
@@ -464,6 +471,49 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                         res["fenced_json_ok"] += json.loads(blk)["value"] == ml
                     except (ValueError, IndexError, KeyError):
                         pass
+        # a listed address whose lines are joined by an HTML tag plus a line break, inside a json.dumps tool result, as
+        # a literal \n four JSON string levels deep, and in tool-call arguments in the history: swapped whole (not
+        # blocked, not split by the address pattern)
+        res["tag_joined"] = res["tag_joined_swapped"] = res["tag_joined_leaked"] = 0
+        for t, vals in listed.items():
+            if t != "ADDRESS":
+                continue
+            for v in vals:
+                lines = v.split("\n") if "\n" in v else v.split(", ")
+                for j in HTML_JOINS + ["\\n"]:
+                    txt = "Please forward this to %s today." % j.join(lines)
+                    deep = json.dumps({"data": json.dumps({"rows": [json.dumps({"v": txt})]})})
+                    for doc in (json.dumps({"result": txt}), json.dumps({"result": txt}, ensure_ascii=False), deep):
+                        body = {"messages": [{"role": "user", "content": "look it up"},
+                                             {"role": "assistant", "content": None, "tool_calls": [{"id": "t0",
+                                              "type": "function", "function": {"name": "send_note", "arguments": doc}}]},
+                                             {"role": "tool", "tool_call_id": "t0", "content": doc}]}
+                        res["tag_joined"] += 1
+                        try:
+                            chk.scrub_request(body)
+                        except c.ScrubError:
+                            continue
+                        if leaked(body, v, t):
+                            res["tag_joined_leaked"] += 1
+                        else:
+                            res["tag_joined_swapped"] += 1
+        # a placeholder the model wrote ASCII-escaped inside a JSON string inside the tool-call arguments
+        # (\\u00abADDRESS_1\\u00bb, one level deeper than \u00ab) is restored, and both JSON levels stay valid
+        res["nested_args"] = res["nested_args_ok"] = 0
+        for t, vals in listed.items():
+            for v in vals:
+                fo = c.Forms()
+                ph = re.findall("\u00ab[A-Z_]+_\\d+\u00bb", chk.scrub_text("Please note: %s." % v, forms=fo))
+                if not ph:
+                    continue
+                for ea in (True, False):
+                    args = json.dumps({"to": ph[0], "nested": json.dumps({"a": ph[0]}, ensure_ascii=ea)}, ensure_ascii=ea)
+                    res["nested_args"] += 1
+                    try:
+                        o = json.loads(chk.restore_text(args, js=True, forms=fo))
+                        res["nested_args_ok"] += o["to"] == v and json.loads(o["nested"])["a"] == v
+                    except (ValueError, KeyError, TypeError):
+                        pass
         # a large encoded body (200 KB of %XX) is checked in well under the client's patience, not in minutes
         big = {"messages": [{"role": "user", "content": "%41" * 66000}]}
         tb = time.time()
@@ -509,6 +559,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                        and res["egress_caught"] == res["egress_forms"]
                        and res["nested_json_ok"] == res["nested_json"] and res["health_ok"] == res["health_checks"]
                        and res["fenced_json_ok"] == res["fenced_json"] and res["large_body_seconds"] < 10
+                       and res["tag_joined_swapped"] == res["tag_joined"] and res["nested_args_ok"] == res["nested_args"]
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
             print(json.dumps(res, ensure_ascii=False), file=out)
@@ -527,6 +578,9 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             print("  exact round trips:                                " + pct(res["round_trip_exact"], res["round_trips"]), file=out)
             print("  JSON-in-JSON multi-line restores, valid + exact:  " + pct(res["nested_json_ok"], res["nested_json"]), file=out)
             print("  JSON in a ```json fence / inline / pasted, valid:  " + pct(res["fenced_json_ok"], res["fenced_json"]), file=out)
+            print("  addresses joined by <br>\\n etc. in JSON, swapped:  " + pct(res["tag_joined_swapped"], res["tag_joined"])
+                  + "  (leaked: %d)" % res["tag_joined_leaked"], file=out)
+            print("  doubly escaped placeholders in tool args restored: " + pct(res["nested_args_ok"], res["nested_args"]), file=out)
             print("  200 KB %%XX body checked in:                       %.2f s" % res["large_body_seconds"], file=out)
             print("  health: blocked when the list breaks, known count: " + pct(res["health_ok"], res["health_checks"]), file=out)
             if res["decoded_round_trips"]:
