@@ -21,8 +21,8 @@ keywords = ["bearer"]
 
 [[rules]]
 id = "stripe-key-any-delimiter"
-description = "Stripe secret/restricted key followed by any non-key character (gitleaks' rule wants a quote, a space or ; after it, so a key inside HTML or before a comma or period was missed)"
-regex = '''(?:^|[^A-Za-z0-9_])((?:sk|rk)_(?:test|live|prod)_[A-Za-z0-9]{10,99})(?:[^A-Za-z0-9_]|$)'''
+description = "Stripe secret/restricted key followed by any non-key character (gitleaks' rule wants a quote, a space or ; after it, so a key inside HTML or before a comma or period was missed; a key body holds a digit, so sk_test_environment.py is not a key)"
+regex = '''(?:^|[^A-Za-z0-9_])((?:sk|rk)_(?:test|live|prod)_(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{10,99})(?:[^A-Za-z0-9_]|$)'''
 secretGroup = 1
 entropy = 2
 keywords = ["sk_test", "sk_live", "sk_prod", "rk_test", "rk_live", "rk_prod"]

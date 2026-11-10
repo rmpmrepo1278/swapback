@@ -3,6 +3,35 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.15] - 2026-11-10
+
+Fixes from independent re-check #15. One phone detector fix and one Stripe rule fix; nothing else changed.
+
+### Fixed
+- **An unlisted phone typed with 3 or more spaces between its digit groups was no longer swapped** (a regression
+  from the 0.4.14 phone fix). 0.4.14 ended a phone candidate at any run of 3 or more blanks, so
+  `Call (406)   555-0191` and `+1   646 555 0139` reached the model in clear, and so did a JSON `\\t` between the
+  groups two or three levels down. Now only an escape that stands for neither a blank nor a letter or digit
+  (`\\u003e`, `\\"`, `\\u0026`) ends a candidate: the phone detector blanks it with a filler that is not a space.
+  Typed spaces and tabs, and escaped `\\t`, `\\n` or `\\u00a0`, stay inside it. When a long run of blanks holds no
+  number as a whole, each run of blanks is read as one space, then each piece between runs of 3 or more is tried
+  (`#555        (206) 555-0142`). Measured with the re-check's scripts: 3 spaces inside a number, levels 0-3, 0.4.14
+  4/12, 0.4.15 12/12; 3 spaces after `+1`, 8/12 to 12/12; a JSON `\\t` between groups, 3/12 to 12/12; all restored
+  exactly. The 0.4.14 shapes (a phone right after `style="color:#555"\\u003e`, `<td style="padding:4px">` and so on)
+  are still swapped. A side effect: a phone whose groups are joined by an escaped no-break space (`\\u00a0`, Python's
+  default `json.dumps`) is now swapped too (0 of 72 to 72 of 72 in the same scripts).
+- **The Stripe rule took words like `sk_test_environment.py` for a key** (0.4.14). A key body must now hold a digit,
+  as real Stripe keys do, so `run pytest sk_test_environment.py now` reaches the model as written. `sk_live_` and
+  `rk_live_` keys inside HTML or JSON are still swapped.
+- The selftest has a new line for these shapes (14 requests; 0.4.14 passes 6 of them), and `tests/test_v0415.py`
+  has 128 tests (31 fail on 0.4.14; the rest check that the 0.4.14 shapes still pass).
+
+### Known issues
+- An unlisted email right after an even run of backslashes (`C:\\\\k.fennimore@…`, a literal backslash pair) can
+  keep its first characters in clear. A contrived shape; listed values are unaffected.
+- An ALL-CAPS listed name with a dotless `ı` is blocked (`503`), not swapped. Fail-closed, nothing leaks.
+- `scrub_timeout_s: .inf` is accepted and means no limit, like `0` or an empty value.
+
 ## [0.4.14] - 2026-11-10
 
 Fixes from independent re-check #14. Small detector fixes plus two README number corrections; nothing else changed.

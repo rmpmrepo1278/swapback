@@ -951,6 +951,25 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                     valid = False
                 whole = bit != "@" or "td>\u00ab" in sent or "u003e\u00ab" in sent   # no letters before it
                 res["r14_esc_ok"] += valid and whole and bit not in sent and "kelmarsh" not in sent and back == content
+        # re-check #15: an unlisted phone typed with 3+ spaces between its digit groups, or a JSON \\t between them
+        # two or three levels down, is swapped (F11); a word like sk_test_environment.py is not a Stripe key (F12)
+        res["r15_ok"] = res["r15"] = 0
+        r15k = "rk" + "_live_" + "Q4mZ8xLp2Wv7Rt9Kc3Nd5Bh6"
+        cases15 = [(t, lv, True, tail) for t, tail in (("Call (406)   555-0191", "0191"), ("+1   646 555 0139", "0139"))
+                   for lv in (0, 1, 2, 3)]
+        cases15 += [("Call 503\t555\t0147", lv, True, "0147") for lv in (2, 3)]
+        cases15 += [("run pytest sk_test_environment.py now", lv, False, None) for lv in (0, 2)]
+        cases15 += [("<td>%s</td>" % r15k, lv, True, r15k[8:]) for lv in (1, 3)]
+        for text, lv, swap, bit in cases15:
+            content = text
+            for _ in range(lv):
+                content = json.dumps({"v": content})
+            sent, back, _fo = r11_round(content, r13)
+            res["r15"] += 1
+            if swap:
+                res["r15_ok"] += sent is not None and bit not in sent and "\u00ab" in sent and back == content
+            else:
+                res["r15_ok"] += sent == content and back == content
         # a bad listen value or a port already in use: one readable line (exit 2), not a traceback
         import socket, subprocess
         res["listen_errors"] = res["listen_errors_ok"] = 0
@@ -1029,7 +1048,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                        and res["r10_more_ok"] == res["r10_more"] and res["r10_many_seconds"] < 10
                        and res["r11_deep_ok"] == res["r11_deep"] and res["r11_more_ok"] == res["r11_more"]
                        and res["r13_esc_ok"] == res["r13_esc"]
-                       and res["r14_esc_ok"] == res["r14_esc"]
+                       and res["r14_esc_ok"] == res["r14_esc"] and res["r15_ok"] == res["r15"]
                        and res["r11_deep_copies_seconds"] < 5
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
@@ -1072,6 +1091,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                   + "  (20 KB of copies 8 levels down: %.2f s)" % res["r11_deep_copies_seconds"], file=out)
             print("  emails/phones right after \\\\u003e, \\\\u0026, \\\\u003c:      " + pct(res["r13_esc_ok"], res["r13_esc"]), file=out)
             print("  keys/emails/phones next to escapes (#14 F6-F8):   " + pct(res["r14_esc_ok"], res["r14_esc"]), file=out)
+            print("  phones with 3+ blanks, sk_test_ words (#15):      " + pct(res["r15_ok"], res["r15"]), file=out)
             print("  200 KB %%XX body checked in:                       %.2f s" % res["large_body_seconds"], file=out)
             print("  health: blocked when the list breaks, known count: " + pct(res["health_ok"], res["health_checks"]), file=out)
             if res["decoded_round_trips"]:
