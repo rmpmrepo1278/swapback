@@ -110,6 +110,29 @@ _V6_FULL = re.compile(r"(?:[0-9A-Fa-f]{1,4}:){7}")
 _NO_TRUE = ("SSN", "IP", "URL", "EMAIL")       # types whose validator never confirms: weak patterns need context
 
 
+# Presidio's email pattern tries every word boundary and scans the run after it for "@": quadratic on long runs of
+# %XX, base64 or form data (48 KB of "%41" took 18 s). Every match holds an "@", so the pattern runs only in a window
+# around each "@": back to the start of the run of local-part characters (at most _AT_BACK), forward _AT_FWD.
+_LOCAL_CH = frozenset("!#$%&'*+-/=?^_`{|}~.")
+_AT_BACK, _AT_FWD = 256, 256
+
+
+def _at_windows(rx, text):
+    """rx.finditer(text) for a pattern whose every match contains "@", in linear time: non-overlapping, leftmost."""
+    out, last, i = [], -1, text.find("@")
+    while i != -1:
+        a, lim = i, max(0, i - _AT_BACK)
+        while a > lim and (text[a - 1].isalnum() or text[a - 1] == "_" or text[a - 1] in _LOCAL_CH):
+            a -= 1
+        for m in rx.finditer(text, max(a, last), min(len(text), i + _AT_FWD)):
+            if m.start() <= i < m.end() and m.start() >= last:
+                out.append(m)
+                last = m.end()
+        nxt = text.find("@", max(i + 1, last))
+        i = nxt
+    return out
+
+
 class Presidio:
     def __init__(self, path=None, iban_ok=None, url_keep=("linkedin.com/in/",), min_score=0.5):
         d = json.load(open(path or os.path.join(VENDOR, "presidio", "patterns.json"), encoding="utf-8"))
@@ -151,7 +174,7 @@ class Presidio:
                 continue                     # speed gates: no match is possible without these substrings
             if score < self.min_score and t in _NO_TRUE and not any(c.strip() in low for c in ctx):
                 continue                     # would be dropped below for want of a context word
-            for m in rx.finditer(text):
+            for m in (_at_windows(rx, text) if t == "EMAIL" else rx.finditer(text)):
                 s, e = m.span()
                 while e > s and text[s] in "\"'" and text[e - 1] in "\"'":
                     s, e = s + 1, e - 1

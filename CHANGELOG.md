@@ -3,6 +3,36 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.5] - 2026-11-10
+
+Fixes from independent review #5 against the launch bar.
+
+### Security
+- **A listed multi-word name written as several path segments leaked** (`Ngọc/Trâm/Vũ`, `/srv/Ngọc/Trâm/Vũ/file`,
+  `/Users/First/Last/notes.txt`; 9 of 15,496 review requests). The "a name that is a path segment is left" exemption
+  now applies only to a name that fits inside one segment (`/home/jane/`, `/home/Jane.Doe/`); a name spread over
+  several segments is swapped, by the matcher and by the egress re-check, and the reply gets the path back as written.
+- **Address lines joined by HTML tags went out whole** (`88 Main St<br>Apt 4<br>City`, `</p><p>`), and so did names
+  with each part in its own tag (`<b>First</b> <b>Last</b>`). Matching and the skeleton re-check now also read HTML
+  tags as line breaks / spaces; the span is restored exactly as written.
+
+### Fixed
+- **JSON inside a prose or markdown reply became invalid on restore.** A multi-line value (an address) restored into a
+  string of a ```json fence, or of an object written inline in a sentence, came back with raw newlines (20/20 review
+  cases), and pasted JSON with `\n` escapes came back unescaped (18/18). Each `{` or `[` in a prose reply now opens a
+  JSON region (until its brackets close, or the first character JSON does not allow), and a value restored inside one
+  of its strings is JSON-escaped, also when streamed. Elsewhere in prose values come back as written.
+- **Large `%XX`, base64 or form-encoded bodies stalled the proxy** (48 KB of `%41` took 18 s, 180 KB 255 s; health did
+  not answer meanwhile). The email pattern scanned every word boundary to the end of the run; it now runs only around
+  each `@` (same matches, linear time). 200 KB bodies of `%XX`, base64, form data, entities or `@` runs: 0.1-0.7 s.
+- **Health `known` counted written formats, not listed values** (45 listed values read 82: each phone counted once
+  per format). `known` and `check-config`'s `known_by_type` now count unique listed values; `known_builtin` unchanged.
+
+### Tests
+- `swapback selftest` adds a name as path segments (`A/B/C`, `/Users/A/B/notes.txt`), `<br>`-joined addresses, JSON
+  restored in a ```json fence, inline in prose and pasted with `\n` escapes, a 200 KB `%XX` body timed, and the health
+  `known` count. `tests/test_v045.py` holds every review #5 repro.
+
 ## [0.4.4] - 2026-11-09
 
 Fixes from independent review #4 against the launch bar.

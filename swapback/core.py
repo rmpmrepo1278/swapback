@@ -23,8 +23,10 @@ Pieces
                 get JSON-escaped values. A per-request Forms record puts back each variant exactly as it was written.
   Fail closed   any error while scrubbing raises ScrubError (the proxy answers 503 and nothing is forwarded); after the
                 swap the outgoing strings are re-checked for known values and the request is blocked if one is left.
-  Paths         a known value that is one segment of a filesystem path (/home/<user>/..., ~/...) is left alone, so
-                agents' file tools keep working; restore keeps the original case of every value.
+  Paths         a known name that fits inside one segment of a filesystem path (/home/<user>/..., ~/...) is left alone,
+                so agents' file tools keep working (a name spread over several segments is swapped); restore keeps the
+                original case of every value. A value restored inside a JSON string (a JSON reply, a ```json fence,
+                an object inline in prose) is JSON-escaped.
 CLI: swapback demo | stats | health | canary | scrub-file IN.json | check-config | init   (swapback --help)
 """
 import fnmatch, json, os, re, sys, threading, time, hashlib, tempfile
@@ -383,6 +385,24 @@ def _normalize(text):
     return "".join(out), starts
 
 
+def _tag_view(text):
+    """(text with each HTML tag such as <br>, </p><p> or <span ...> read as one line break, starts) like _normalize:
+    an address whose lines are joined by <br> is matched as the listed multi-line address."""
+    out, starts, i = [], [], 0
+    for m in _HTML_TAG.finditer(text):
+        for j in range(i, m.start()):
+            out.append(text[j])
+            starts.append(j)
+        out.append("\n")
+        starts.append(m.start())
+        i = m.end()
+    for j in range(i, len(text)):
+        out.append(text[j])
+        starts.append(j)
+    starts.append(len(text))
+    return "".join(out), starts
+
+
 def match_views(text):
     """[(view, index map back to text, surface(s, e))]: the normalized text, each decoded view (decoded_views) and each
     decoded view normalized. surface: the spelling a hit at view[s:e] is restored as — None when the view is only a
@@ -393,6 +413,9 @@ def match_views(text):
         d, st = _normalize(text)
         if d != text:
             views.append((d, st, lambda s, e: None))
+    if "<" in text and _HTML_TAG.search(text):
+        d, st = _tag_view(text)
+        views.append((d, st, lambda s, e: None))
     for d, m in decoded_views(text):
         views.append((d, m, lambda s, e, d=d: d[s:e]))
         if _NORM_HINT.search(d):
@@ -467,6 +490,30 @@ def _phone_core(p):
     return d if len(d) >= 7 else None
 
 
+def _listed_key(v, t):
+    """one key per listed value: a phone's written forms (load_known expands them) share their national digits."""
+    if t == "PHONE":
+        c = _phone_core(str(v))
+        if c:
+            return ("PHONE", c)
+    return (t, _norm_key(str(v)))
+
+
+def listed_count(pairs, by_type=False):
+    """how many unique values a [(value, TYPE)] list holds (phone formats counted once); by TYPE when asked."""
+    keys = {_listed_key(v, t) for v, t in pairs}
+    ph = sorted((k for t, k in keys if t == "PHONE"), key=len)
+    for i, k in enumerate(ph):                       # "447700900123" (a bare-digit format) is "+44 7700 900123"
+        if any(k != j and k.endswith(j) and len(k) - len(j) <= 3 for j in ph[:i]):
+            keys.discard(("PHONE", k))
+    if not by_type:
+        return len(keys)
+    by = {}
+    for t, _k in keys:
+        by[t] = by.get(t, 0) + 1
+    return by
+
+
 def _phone_variants(p):
     """the written forms a listed phone is matched in. Always the form as written and its bare digits; the common US
     formats only for numbers that are actually US (_is_us_phone). Any other grouping of the same digits is still
@@ -507,6 +554,9 @@ _SK_ALNUM = re.compile(r"[^\W_]")
 _SK_DIGITRUN = re.compile(r"\d+(?:[\W_]{1,3}\d+)*")
 _NONDIGIT = re.compile(r"\D")
 _DIGITS = re.compile(r"\d+")
+
+
+_HTML_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9]{0,9}(?:\s[^<>]{0,200})?/?>")     # <br>, <br/>, </p>, <span class="x">
 
 
 def skeleton_text(text):
@@ -804,18 +854,20 @@ def build_private_terms(path):
 # ---------------------------------------------------------------- filesystem paths
 # A known name that is one segment of a filesystem path (/home/<user>/x, ~/x, a/b/<name>/c) is a folder name, not a
 # person: swapping it breaks agent tool calls (read_file on a path whose case changed). URLs and domains still swap.
+# Only a name that fits inside one segment is left; a multi-word name spread over segments (/Users/First/Last/) swaps.
 _PATH_STOP = frozenset(" \t\r\n\"'`<>()[]{},;|=*")
 _DOMAIN_HEAD = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?::\d+)?/")
 
 
 def in_fs_path(text, s, e):
-    """True when text[s:e] is a whole segment of a POSIX-looking path token."""
+    """True when text[s:e] is one whole segment of a POSIX-looking path token. A name whose words span several
+    segments (/Users/First/Last/, Ngoc/Tram/Vu) is not a folder name: it is swapped (or blocked), not left."""
     seg = text[s:e]
-    if not seg or any(c in _PATH_STOP for c in seg) or seg.startswith("/") or seg.endswith("/"):
+    if not seg or "/" in seg or "\\" in seg or any(c in _PATH_STOP for c in seg):
         return False
     before = text[s - 1] if s else ""
     after = text[e] if e < len(text) else ""
-    if before != "/" and after != "/" and "/" not in seg:
+    if before != "/" and after != "/":
         return False
     a, b, n = s, e, len(text)
     while a > 0 and text[a - 1] not in _PATH_STOP:
@@ -1051,9 +1103,12 @@ class Scrubber:
     load_error = ""
 
     def known_count(self):
-        """listed values in force (your file, plus previous values held after a shrink), not counting the two
-        built-in canary values."""
-        return len(self.known_user) if self.known_user is not None else max(0, len(self.known) - len(CANARY))
+        """unique listed values in force (your file, plus previous values held after a shrink): a phone counts once
+        however many written forms it is matched in; the two built-in canary values are not counted."""
+        if self.known_user is not None:
+            return listed_count(self.known_user)
+        canary = {_listed_key(v, t) for v, t in CANARY}
+        return len({_listed_key(v, t) for v, t in self.known.values()} - canary)
 
     def status(self):
         """(ok, status, reason): blocked (every request is refused: empty list, or the file is missing or unreadable
@@ -1312,6 +1367,7 @@ class Scrubber:
         if not text or len(text) < 6 or not (getattr(self, "sk_ents", None) or getattr(self, "sk_cores", None)):
             return []
         out, views = [], [text] + [d for d, _m in decoded_views(text, depth=5)]
+        views += [_HTML_TAG.sub(" ", v) for v in views if "<" in v and ">" in v]    # <br>-joined lines, tagged parts
         for view in views:
             out += self._sk_scan(skeleton_text(view))
             if out:
@@ -1587,28 +1643,54 @@ _BARE_FULL = re.compile(r"(?:" + "|".join(TYPES) + r")_\d+")
 
 class JsonStrState:
     """whether a position in a reply sits inside a string of a JSON document. A reply is a JSON document when its first
-    non-blank character is { or [; anything else is prose and nothing is escaped. Scans forward only."""
-    __slots__ = ("doc", "ins", "esc", "src", "pos", "sbuf")
+    non-blank character is { or [. In any other reply (prose, markdown), each { or [ opens a JSON region that lasts
+    until its brackets close: a ```json fence, or an object written inline in a sentence. A region ends early at the
+    first character JSON does not allow (a letter outside a string other than true/false/null, a raw newline inside a
+    string), so ordinary prose with a brace in it is left as prose. Scans forward only."""
+    __slots__ = ("doc", "ins", "esc", "src", "pos", "sbuf", "emb")
+    _OK = frozenset(" \t\r\n,:0123456789-+.eEtruefalsn")
 
     def __init__(self):
-        self.doc, self.ins, self.esc, self.src, self.pos, self.sbuf = None, False, False, None, 0, []
+        self.doc, self.ins, self.esc, self.src, self.pos, self.sbuf, self.emb = None, False, False, None, 0, [], 0
 
     def copy(self):
         o = JsonStrState()
-        o.doc, o.ins, o.esc, o.sbuf = self.doc, self.ins, self.esc, list(self.sbuf)
+        o.doc, o.ins, o.esc, o.sbuf, o.emb = self.doc, self.ins, self.esc, list(self.sbuf), self.emb
         return o
 
     def feed(self, s, a=0, b=None):
         b = len(s) if b is None else b
         i = a
-        while i < b and self.doc is not False:
+        while i < b:
             c = s[i]
+            i += 1
             if self.doc is None:
-                if not c.isspace():
-                    self.doc = c in "{["
-                    if not self.doc:
-                        return
-            elif self.esc:
+                if c.isspace():
+                    continue
+                self.doc = c in "{["
+                if self.doc:
+                    continue
+            if self.doc:                             # the whole reply is a JSON document
+                if self.esc:
+                    self.esc = False
+                    self.sbuf.append(c)
+                elif self.ins:
+                    if c == "\\":
+                        self.esc = True
+                        self.sbuf.append(c)
+                    elif c == '"':
+                        self.ins = False
+                        self.sbuf = []
+                    else:
+                        self.sbuf.append(c)
+                elif c == '"':
+                    self.ins, self.sbuf = True, []
+                continue
+            if not self.emb:                         # prose: a JSON region opens at { or [
+                if c == "{" or c == "[":
+                    self.emb = 1
+                continue
+            if self.esc:
                 self.esc = False
                 self.sbuf.append(c)
             elif self.ins:
@@ -1618,20 +1700,26 @@ class JsonStrState:
                 elif c == '"':
                     self.ins = False
                     self.sbuf = []
+                elif c == "\n":                      # a raw newline: this was not a JSON string
+                    self.ins, self.sbuf, self.emb = False, [], 0
                 else:
                     self.sbuf.append(c)
             elif c == '"':
                 self.ins, self.sbuf = True, []
-            i += 1
+            elif c == "{" or c == "[":
+                self.emb += 1
+            elif c == "}" or c == "]":
+                self.emb -= 1
+            elif c not in self._OK:
+                self.emb = 0                         # not JSON after all
 
     def inside_at(self, s, pos):
         """inside a JSON string at s[pos] (positions asked in increasing order on the same s)."""
         if self.src is not s:
             self.src, self.pos = s, 0
-        if self.doc is not False:
-            self.feed(s, self.pos, pos)
+        self.feed(s, self.pos, pos)
         self.pos = max(self.pos, pos)
-        return bool(self.doc) and self.ins
+        return self.ins and bool(self.doc or self.emb)
 
     def depth_at(self, s, pos):
         """how many JSON string levels a value written at s[pos] sits in: 0 outside any string, 1 inside a string of
@@ -1698,7 +1786,7 @@ class StreamRestorer:
 
     def _out(self, b):
         out = self.s.restore_text(b, self.js, self.stats, self.forms, None if self.js else self.jstate)
-        if not self.js and self.jstate.doc is not False:
+        if not self.js:
             self.jstate.feed(out)
         return out
 
@@ -2372,9 +2460,7 @@ def _run_cmd(cmd, cfg, args):
         warn, notes = [], []
         if cfg.get("known_file"):
             k = load_known(cfg["known_file"])
-            by = {}
-            for _, t in k:
-                by[t] = by.get(t, 0) + 1
+            by = listed_count(k, by_type=True)            # unique listed values (a phone's formats count once)
             out["known_by_type"] = by
             if not k and not cfg.get("allow_empty_known"):
                 warn.append("known_file has no values: the proxy blocks every request until you add some (or set "

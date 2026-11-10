@@ -70,9 +70,14 @@ def test_plain_normalised_forms_round_trip_byte_exact(tmp_path, text):
 
 
 def test_paths_with_a_listed_name_segment_are_still_kept(tmp_path):
+    # 0.4.5: only a name that fits in one path segment is left; one spread over segments swaps (review #5)
     s = _scr(tmp_path)
-    for p in ("/home/tobias/wrenfield/notes.txt", "~/tobias/wrenfield/x"):
+    for p in ("/home/tobias.wrenfield/notes.txt", "~/Tobias_Wrenfield/x"):
         assert s.scrub_text("open " + p) == "open " + p
+    for p in ("/home/tobias/wrenfield/notes.txt", "~/tobias/wrenfield/x"):
+        f = c.Forms()
+        out = s.scrub_text("open " + p, forms=f)
+        assert "PERSON_" in out and s.restore_text(out, forms=f) == "open " + p
 
 
 @pytest.mark.parametrize("text", [

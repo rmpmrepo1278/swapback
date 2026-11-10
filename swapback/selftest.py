@@ -78,6 +78,8 @@ def forms(v, t):
         out.append(w[-1] + ", " + " ".join(w[:-1]))
         if _fold(v) != v.lower():
             out.append(_ascii(v))
+        if len(w) >= 2:                              # words spread over path segments: a path, not a folder name
+            out += ["/".join(w), "/Users/%s/notes.txt" % "/".join(w)]
         if "-" in v:                                 # a hyphen written as a space or as nothing, also surname first
             sp = v.replace("-", " ")
             out += [sp, v.replace("-", ""), " ".join(sp.split()[1:]) + " " + sp.split()[0]]
@@ -91,6 +93,7 @@ def forms(v, t):
         out.append(re.sub(r"[\s.\-]", "", v))
     if t == "ADDRESS":
         out.append(v.replace(", ", "\n", 1))
+        out.append(v.replace(", ", "<br>"))            # lines joined by HTML line breaks
     out += encoded_forms(v, t)
     seen, res = set(), []
     for x in out:
@@ -432,6 +435,43 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                         res["nested_json_ok"] += sc != doc and o["note"].endswith(ml)
                     except (ValueError, StopIteration, KeyError, TypeError):
                         pass
+        # a multi-line value restored inside a JSON string that sits in a ```json fence or inline in prose keeps that
+        # JSON valid, and JSON the user pasted (newlines written as \n) comes back byte-exact
+        res["fenced_json"] = res["fenced_json_ok"] = 0
+        for t, vals in listed.items():
+            for v in vals:
+                if " " not in v:
+                    continue
+                ml = v.replace(", ", "\n") if t == "ADDRESS" else v.replace(" ", "\n", 1)
+                fo = c.Forms()
+                sc = chk.scrub_text("Extract as JSON:\n" + ml + "\nthanks", forms=fo)
+                ph = re.findall("\u00ab[A-Z_]+_\\d+\u00bb", sc)
+                pasted = "Fix this:\n```json\n" + json.dumps({"note": ml}) + "\n```"
+                for kind in ("fence", "inline", "pasted"):
+                    res["fenced_json"] += 1
+                    try:
+                        if kind == "pasted":
+                            fo2 = c.Forms()
+                            back = chk.restore_text(chk.scrub_text(pasted, forms=fo2), forms=fo2)
+                            blk = back[back.index("{"):back.rindex("}") + 1]
+                            res["fenced_json_ok"] += json.loads(blk)["note"] == ml
+                            continue
+                        doc = json.dumps({"value": ph[0], "n": 1}, ensure_ascii=False)
+                        reply = ("Here it is:\n```json\n%s\n```\nDone." % doc if kind == "fence" else
+                                 "The record is %s as asked." % doc)
+                        back = chk.restore_text(reply, forms=fo)
+                        blk = back[back.index("{"):back.rindex("}") + 1]
+                        res["fenced_json_ok"] += json.loads(blk)["value"] == ml
+                    except (ValueError, IndexError, KeyError):
+                        pass
+        # a large encoded body (200 KB of %XX) is checked in well under the client's patience, not in minutes
+        big = {"messages": [{"role": "user", "content": "%41" * 66000}]}
+        tb = time.time()
+        try:
+            chk.scrub_request(big)
+        except c.ScrubError:
+            pass
+        res["large_body_seconds"] = round(time.time() - tb, 2)
         # health while running: the list file deleted, then broken, must read blocked (ok false), then ok again
         kp = os.path.join(d, "known.yaml")
         good = open(kp, encoding="utf-8").read()
@@ -440,8 +480,10 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             with urllib.request.urlopen(base + "/scrubber/health", timeout=10) as r:
                 h = json.loads(r.read().decode())
             return h.get("ok"), h.get("status")
-        res["health_checks"], res["health_ok"] = 4, 0
+        res["health_checks"], res["health_ok"] = 5, 0
         res["health_ok"] += hstat() == (True, "ok")
+        with urllib.request.urlopen(base + "/scrubber/health", timeout=10) as r:     # "known": unique listed values
+            res["health_ok"] += json.loads(r.read().decode()).get("known") == sum(len(x) for x in listed.values())
         os.remove(kp)
         res["health_ok"] += hstat() == (False, "blocked")
         with open(kp, "w", encoding="utf-8") as f:
@@ -466,6 +508,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                        and res["decoded_round_trip_same"] == res["decoded_round_trips"]
                        and res["egress_caught"] == res["egress_forms"]
                        and res["nested_json_ok"] == res["nested_json"] and res["health_ok"] == res["health_checks"]
+                       and res["fenced_json_ok"] == res["fenced_json"] and res["large_body_seconds"] < 10
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
             print(json.dumps(res, ensure_ascii=False), file=out)
@@ -483,7 +526,9 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             print("  ordinary sentences left untouched:                " + pct(res["negatives_untouched"], res["negatives"]), file=out)
             print("  exact round trips:                                " + pct(res["round_trip_exact"], res["round_trips"]), file=out)
             print("  JSON-in-JSON multi-line restores, valid + exact:  " + pct(res["nested_json_ok"], res["nested_json"]), file=out)
-            print("  health blocked when the list file breaks mid-run: " + pct(res["health_ok"], res["health_checks"]), file=out)
+            print("  JSON in a ```json fence / inline / pasted, valid:  " + pct(res["fenced_json_ok"], res["fenced_json"]), file=out)
+            print("  200 KB %%XX body checked in:                       %.2f s" % res["large_body_seconds"], file=out)
+            print("  health: blocked when the list breaks, known count: " + pct(res["health_ok"], res["health_checks"]), file=out)
             if res["decoded_round_trips"]:
                 print("  %XX-encoded forms back as the same value, decoded: " + pct(res["decoded_round_trip_same"],
                                                                                  res["decoded_round_trips"]), file=out)
