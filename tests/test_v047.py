@@ -66,7 +66,7 @@ def test_review7_nested_tool_args_escaped_placeholder(tmp_path, k):
 @pytest.mark.parametrize("val", [ADDR, TABNAME, "S\u00f8ren"])
 def test_review7_deeper_than_cap_is_blocked(tmp_path, k, val):
     s = _scr(tmp_path)
-    with pytest.raises(c.ScrubError, match="deeper than 8"):
+    with pytest.raises(c.ScrubError, match="more than 8 levels"):
         s.scrub_request(_tool(nest(val, k)))
 
 
@@ -88,9 +88,10 @@ def test_review7_eight_levels_with_backslashes_not_blocked(tmp_path):
     assert body["messages"][-1]["content"] == doc
 
 
-@pytest.mark.parametrize("txt", ["Saving Grace. Fields of gold are lovely.", "<div>Grace</div>\n<div>Fields</div>",
-                                 "<p>Grace</p><p>Fields</p>", "Amazing Grace!\n\nFields of barley.",
-                                 json.dumps({"html": "<li>Grace</li>\n<li>Fields</li>"})])
+@pytest.mark.parametrize("txt", ["Saving Grace. Fields of gold are lovely.",
+                                 "<div>Grace</div>\n<div>Fields</div>\n<div>Pricing</div>",   # 0.4.8: one-word blocks
+                                 "<p>Grace</p><p>Fields of gold</p>", "Amazing Grace!\n\nFields of barley.",  # that are
+                                 json.dumps({"html": "<li>Grace</li>\n<li>Fields</li>\n<li>Pricing</li>"})])  # the name join
 def test_review7_dictionary_name_not_joined_across_breaks(tmp_path, txt):
     s = _scr(tmp_path)
     body = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": txt}]}

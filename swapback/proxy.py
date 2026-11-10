@@ -449,10 +449,17 @@ def make_server(cfg=None, hooks=None):
     if UP.scheme not in ("http", "https") or not UP.hostname:
         raise SystemExit("upstream must be an http(s) URL")
     LOG = os.path.join(S.state_dir(CFG), "requests.jsonl")
-    host, port = str(CFG.get("listen") or S.DEFAULTS["listen"]).rsplit(":", 1)
+    lst = str(CFG.get("listen") or S.DEFAULTS["listen"])
+    host, sep, port = lst.rpartition(":")
+    if not sep or not host or not port.isdigit() or not 0 <= int(port) < 65536:
+        raise S.ConfigError('listen: "%s" is not host:port (for example 127.0.0.1:8787)' % lst)
     if host not in ("127.0.0.1", "localhost", "::1") and not CFG.get("allow_remote"):
         raise SystemExit("refusing to listen off loopback (set allow_remote: true if you really mean it)")
-    srv = ThreadingHTTPServer((host, int(port)), H)
+    try:
+        srv = ThreadingHTTPServer((host, int(port)), H)
+    except OSError as e:                         # port already in use, an address this machine does not have
+        raise S.ConfigError("cannot listen on %s (%s; is another proxy already running there? change `listen`)"
+                            % (lst, e.strerror or e))
     srv.daemon_threads = True
     return srv
 

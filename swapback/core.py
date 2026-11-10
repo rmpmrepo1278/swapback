@@ -429,15 +429,63 @@ _BLOCK_BREAK = re.compile(r"</?(?:div|p|li|td|th|tr|h[1-6]|ul|ol|table|tbody|the
                           r"blockquote|pre|dd|dt|dl)\b[^<>]{0,200}>|\n[^\S\n]*\n", re.I)
 
 
-def _name_break(surface, value):
+_BLOCK_TAG = re.compile(r"</?(?:div|p|li|td|th|tr|h[1-6]|ul|ol|table|tbody|thead|section|article|header|footer|"
+                        r"blockquote|pre|dd|dt|dl)\b[^<>]{0,200}>", re.I)
+_CELL_GAP = re.compile(r"(?:\s|\\+[nrt]|&nbsp;|&#160;|</?(?:b|i|u|em|strong|span|font|a|small)\b[^<>]{0,200}>)+", re.I)
+_BLOCK_TAG_END = re.compile(_BLOCK_TAG.pattern + r"$", re.I)
+
+
+def _cell_name(surface, value, before, after):
+    """a dictionary-word name whose words each fill one HTML block element of their own (a first/last-name table
+    row <td>Hazel</td><td>Woods</td>, list items, divs): every block holds exactly one word, those words joined are
+    the listed name, and the run of one-word blocks ends there (a row or list boundary, or a neighbouring block that
+    is not one more capitalised word: a menu <div>Grace</div><div>Fields</div><div>Pricing</div> stays as written)."""
+    words = [w for w in (_CELL_GAP.sub(" ", x).strip() for x in _BLOCK_TAG.split(surface)) if w]
+    want = value.split()
+    if len(words) < 2 or any(" " in w for w in words) or [w.lower() for w in words] != [w.lower() for w in want]:
+        return False
+    b = _CELL_GAP.sub(" ", before[-300:]).rstrip()
+    a = _CELL_GAP.sub(" ", after[:300]).lstrip()
+    if not (_BLOCK_TAG_END.search(b) and _BLOCK_TAG.match(a)):
+        return False
+    return _run_ends(a, False) and _run_ends(b, True)
+
+
+_RUN_EDGE = re.compile(r"</?(?:tr|ul|ol|table|tbody|thead|dl|section|article|header|footer)\b", re.I)
+_ONE_CAP_WORD = re.compile(r"[^\W\d_][^\W\d_'\u2019-]*")
+
+
+def _run_ends(side, backward):
+    """the text beside a run of one-word blocks (block tags first): True at a row/list boundary, at the end of the
+    text, or when the next block's text is not a single capitalised word."""
+    tags = []
+    while side:
+        m = _BLOCK_TAG_END.search(side) if backward else _BLOCK_TAG.match(side)
+        if not m:
+            break
+        tags.append(m.group(0))
+        side = (side[:m.start()] if backward else side[m.end():])
+        side = side.rstrip() if backward else side.lstrip()
+    if any(_RUN_EDGE.match(t) for t in tags) or not side:
+        return True
+    k = side.rfind(">") if backward else side.find("<")
+    nxt = (side[k + 1:] if backward else side[:k if k != -1 else len(side)]).strip()
+    return not (_ONE_CAP_WORD.fullmatch(nxt) and nxt[:1].isupper())
+
+
+def _name_break(surface, value, before=None, after=None):
     """True when the words of a dictionary-word name are split by a sentence end ("Saving Grace. Fields of gold"), a
     blank line or separate HTML block elements ("<div>Grace</div>\n<div>Fields</div>"): two ordinary words that
-    only sit side by side, not a name. False when the listed value itself is written that way."""
+    only sit side by side, not a name. False when the listed value itself is written that way, and False when each
+    word fills a block element of its own and the words joined are the listed name (before/after: the text around
+    the surface; see _cell_name)."""
     if not surface:
         return False
     for rx in (_SENT_END, _BLOCK_BREAK):
         m = rx.search(surface)
         if m and m.end() < len(surface) and not rx.search(value):
+            if rx is _BLOCK_BREAK and before is not None and _cell_name(surface, value, before, after or ""):
+                return False
             return True
     return False
 
@@ -1389,7 +1437,8 @@ class Scrubber:
             hits += [(m[s], m[e], k, surf(s, e)) for s, e, k in self._known_hits_raw(d)]
         if hits and self.strict:                    # dictionary-word names: not across a sentence end or HTML blocks
             hits = [h for h in hits if self.alias.get(h[2], h[2]) not in self.strict or not _name_break(
-                text[h[0]:h[1]] if h[3] is None else h[3], self.known.get(self.alias.get(h[2], h[2]), (h[2],))[0])]
+                text[h[0]:h[1]] if h[3] is None else h[3], self.known.get(self.alias.get(h[2], h[2]), (h[2],))[0],
+                text[max(0, h[0] - 300):h[0]], text[h[1]:h[1] + 300])]
         return _dedupe(hits)
 
     def _known_hits_raw(self, text, low=None):
@@ -1530,7 +1579,8 @@ class Scrubber:
                 return False
         name = typ in ("PERSON", "FAMILY", "ORG")
         if strict:
-            if _name_break(t[pos[i]:pos[j - 1] + 1], self.known.get(key, (" ",))[0] if key else " "):
+            if _name_break(t[pos[i]:pos[j - 1] + 1], self.known.get(key, (" ",))[0] if key else " ",
+                           t[max(0, pos[i] - 300):pos[i]], t[pos[j - 1] + 1:pos[j - 1] + 301]):
                 return False
             word_first = [sk[i + n] for n in starts]
             letters = sk[i:j]
@@ -1596,7 +1646,8 @@ class Scrubber:
                 return [walk(x, key, parent) for x in o]
             if isinstance(o, str):
                 if "\\" in o and _PAST_CAP.search(o):
-                    raise ScrubError("JSON nested deeper than %d levels cannot be checked" % MATCH_DEPTH)
+                    raise ScrubError("a run of %d or more backslashes cannot be checked (JSON nested more than %d levels "
+                                     "deep, or a backslash nested %d deep)" % (2 ** MATCH_DEPTH, MATCH_DEPTH, MATCH_DEPTH))
                 s, u = self._scrub(o, counts, forms)
                 h = hashlib.blake2b((s if u is None else s + "\x00" + u).encode("utf-8", "surrogatepass"),
                                     digest_size=16).digest()
@@ -1651,17 +1702,18 @@ class Scrubber:
         address keeps the JSON valid. jstate: a JsonStrState carried across stream chunks (StreamRestorer)."""
         if not text or ("_" not in text):
             return text
-        if not js:
-            jst = (jstate.copy() if jstate is not None else JsonStrState())
 
+        def mk():                                   # where each placeholder sits: JSON string levels, read from the text
+            return jstate.copy() if jstate is not None else JsonStrState()
+        jst = mk()
+        if not js:
             def val(ph, pos, cur):
                 return self._val(ph, jst.depth_at(cur, pos), forms)
         else:
             def val(ph, pos, cur):                  # tool-call arguments: one level, more inside nested JSON strings
-                if "\\" not in cur:
+                if jstate is None and "\\" not in cur:
                     return self._val(ph, 1, forms)
-                st = JsonStrState()
-                return self._val(ph, max(1, st.depth_at(cur, pos)), forms)
+                return self._val(ph, max(1, jst.depth_at(cur, pos)), forms)
 
         def rep(m):
             v = val(m.group(0), m.start(), text)
@@ -1673,13 +1725,17 @@ class Scrubber:
                 stats["restored"] = stats.get("restored", 0) + 1
             return v
         text = PH_RE.sub(rep, text)
-        if not js:
-            jst = (jstate.copy() if jstate is not None else JsonStrState())
-        if js and "\\u00" in text:
+        if "\\u00" in text:
+            jst2, cur1 = mk(), text
+
             def rep_js(m):
                 n = len(m.group(1))                 # \u00ab..: JSON inside JSON, escaped once more per level
                 one = n & (n - 1) == 0
-                v = self._val(f"{L}{m.group(2)}_{m.group(3)}{R}", n.bit_length() if one else 1, forms)
+                d = jst2.depth_at(cur1, m.start())  # the JSON string levels it really sits in (mixed escaping: an
+                if not js and not d:                # ASCII-escaped outer level around a raw inner one writes \u00ab
+                    return m.group(0)               # once at any depth); in a text reply only inside a JSON string
+                lv = max(n.bit_length(), d) if one else 1
+                v = self._val(f"{L}{m.group(2)}_{m.group(3)}{R}", lv, forms)
                 if v is None:
                     return m.group(0)
                 if stats is not None:
@@ -1688,8 +1744,7 @@ class Scrubber:
             text = JS_PH_RE.sub(rep_js, text)
         if self.cfg.get("restore_bare", True):
             cur2 = text
-            if not js:
-                jst = (jstate.copy() if jstate is not None else JsonStrState())
+            jst = mk()
 
             def rep2(m):
                 ph = f"{L}{m.group(1)}_{m.group(2)}{R}"
@@ -1827,10 +1882,14 @@ class JsonStrState:
     def depth_at(self, s, pos):
         """how many JSON string levels a value written at s[pos] sits in: 0 outside any string, 1 inside a string of
         this document, 2 when that string's content is itself a JSON document and the position is inside one of its
-        strings (json.dumps of json.dumps), and so on (up to MATCH_DEPTH, the levels the matcher reads)."""
+        strings (json.dumps of json.dumps), and so on (up to _RESTORE_DEPTH: a placeholder the model wrote deeper than
+        the 8 levels the matcher reads is still escaped once per level)."""
         if not self.inside_at(s, pos):
             return 0
-        return 1 + _inner_depth("".join(self.sbuf), MATCH_DEPTH - 1)
+        return 1 + _inner_depth("".join(self.sbuf), _RESTORE_DEPTH - 1)
+
+
+_RESTORE_DEPTH = 2 * MATCH_DEPTH
 
 
 def _inner_depth(raw, left):
@@ -1845,7 +1904,14 @@ def _inner_depth(raw, left):
     st.feed(txt)
     if not (st.doc and st.ins):
         return 0
+    head = _JSON_STR.sub("", txt[:len(txt) - len(st.sbuf) - 1])
+    if _NOT_JSON.search(head):                      # "[1] Contact: \"..." starts with [ but is prose, not JSON
+        return 0
     return 1 + _inner_depth("".join(st.sbuf), left - 1)
+
+
+_JSON_STR = re.compile(r'"(?:[^"\\]|\\.)*"')
+_NOT_JSON = re.compile(r"[^\s{}\[\],:0-9A-Za-z+\-.]|\b(?!(?:true|false|null)\b)[A-Za-z]\w*")
 
 
 def _escaped_json_doc(s):
@@ -1876,7 +1942,7 @@ class StreamRestorer:
         self.jstate = JsonStrState()
 
     def _cut(self, b):
-        if self.js:                                 # JSON text may carry the placeholder escaped: \u00abPERSON_1\u00bb
+        if "\\" in b[-(2 ** (MATCH_DEPTH + 1) + 48):]:   # JSON text may carry the placeholder escaped: \u00abPERSON_1\u00bb
             low = b[-(2 ** (MATCH_DEPTH + 1) + 48):].lower()      # a placeholder escaped 8 levels deep: ~300 chars
             off = len(b) - len(low)
             i = low.rfind("\\u00ab")
@@ -1908,9 +1974,8 @@ class StreamRestorer:
         return self._out(b[:cut])
 
     def _out(self, b):
-        out = self.s.restore_text(b, self.js, self.stats, self.forms, None if self.js else self.jstate)
-        if not self.js:
-            self.jstate.feed(out)
+        out = self.s.restore_text(b, self.js, self.stats, self.forms, self.jstate)
+        self.jstate.feed(out)
         return out
 
     def flush(self):

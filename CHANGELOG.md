@@ -3,6 +3,36 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.8] - 2026-11-10
+
+Fixes from independent review #8 against the launch bar.
+
+### Fixed
+- **Tool-call arguments with mixed escaping came back with invalid inner JSON** (review: 189 of 189 multi-line or
+  tab-joined restores at 1 to 7 inner levels). When the outer level of the arguments is ASCII-escaped (`json.dumps`
+  default) and the JSON inside it was written raw, the placeholder carries one backslash at any depth; the restore
+  escaped the value by that count, so a newline came back one or more levels short. The value is now escaped for the
+  JSON level it really sits in, read from the text around it (up to 16 levels), in plain and streamed replies; the
+  streamed JSON state is carried across chunks. Repro: `json.dumps({"path": "a.json", "content":
+  json.dumps({"address": "«ADDRESS_1»"}, ensure_ascii=False)})` with a three-line address now parses at both levels
+  and matches byte for byte. An inner "document" that is prose starting with `[` or `{` no longer counts as a JSON level.
+- **`\u00ab`-escaped placeholders in a text reply were never restored** (3 of 3 shapes: a ```json fence, inline JSON,
+  two levels). They are now restored when they sit inside a JSON string, escaped for its level; outside JSON they are
+  left as written.
+- **A dictionary-word name split over one-word HTML blocks was sent** (0.4.7's no-join rule; review: 25 of 30 requests
+  for `<td>Hazel</td><td>Woods</td>`, `<li>Hazel</li><li>Woods</li>`, `<div>Summer</div>\n<div>Lake</div>`). Blocks
+  are joined again when each holds exactly one word, those words are the listed name and the run of one-word blocks
+  ends there (a row or list boundary, or a neighbouring block that is not one more capitalised word, so a menu
+  `<div>Grace</div><div>Fields</div><div>Pricing</div>` stays as written). Sentence ends and blank lines still break a name.
+- **A bad `listen` value or a port already in use printed a traceback.** Both are now one readable line (exit 2).
+- **The 503 for a run of 256 or more backslashes said "JSON nested deeper than 8 levels"**, which is not all it
+  blocks; it now says what it blocks (a run of 256+ backslashes: JSON nested more than 8 levels deep, or a backslash
+  nested 8 deep). The README says the same.
+
+### Documentation
+- README: line count measured (about 5,100 lines, 250 KB) and the same in the prose and the comparison table; the
+  backslash rule, the config-error sentence, the restore depth and the one-word-block rule worded as they behave.
+
 ## [0.4.7] - 2026-11-10
 
 Fixes from independent review #7 against the launch bar.

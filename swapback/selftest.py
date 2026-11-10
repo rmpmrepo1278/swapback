@@ -63,9 +63,20 @@ REVIEW7_DEEP = ["2219 Larkspur Hollow Road\nSuite 410\nBoise, ID 83702", "Odile\
 REVIEW7_KNOWN = [(REVIEW7_DEEP[0], "ADDRESS"), ("Odile Marchetti", "PERSON"), ("S\u00f8ren \u00c5lund", "PERSON"),
                  ("Grace Fields", "PERSON")]
 REVIEW7_NAME_TEXTS = [("Saving Grace. Fields of gold are lovely.", "untouched"),
-                      ("<div>Grace</div>\n<div>Fields</div>", "untouched"), ("<p>Grace</p><p>Fields</p>", "untouched"),
+                      ("<div>Grace</div>\n<div>Fields</div>\n<div>Pricing</div>", "untouched"),
+                      ("<p>Grace</p><p>Fields of gold</p>", "untouched"),
                       ("Amazing Grace!\n\nFields of barley.", "untouched"), ("Ask Grace Fields today.", "swapped"),
                       ("<b>Grace</b> Fields", "swapped"), ("Grace<br>Fields", "swapped")]
+# review #8 (0.4.8): tool-call arguments with mixed escaping, \u00ab-escaped placeholders in a text reply, a
+# dictionary-word name whose words each fill one HTML block element, a bad listen value or a port in use
+REVIEW8_ADDR = "3381 Wintergreen Spur Road\nSuite 220\nBend, OR 97701"
+REVIEW8_KNOWN = [(REVIEW8_ADDR, "ADDRESS"), ("Odile Marchetti", "PERSON"), ("Hazel Woods", "PERSON"), ("Summer Lake", "PERSON")]
+REVIEW8_CELLS = [("<table><tr><td>Hazel</td><td>Woods</td></tr></table>", "swapped"),
+                 ("<ul><li>Hazel</li><li>Woods</li></ul>", "swapped"), ("<div>Summer</div>\n<div>Lake</div>", "swapped"),
+                 ("<tr><td>Hazel</td><td>Woods</td><td>hw@example.net</td></tr>", "swapped"),
+                 ("<h2>Summer</h2><p>Lake trips are the best part of the year.</p>", "untouched"),
+                 ("<li>Summer sale</li><li>Lake view rooms</li>", "untouched"),
+                 ("Customer: Hazel. Woods is her surname.", "not swapped")]
 
 
 def _fold(s):
@@ -603,6 +614,92 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                 c.load_cfg(cp)
             except Exception as e:           # a ConfigError: one line naming the file (a traceback is a fail)
                 res["config_errors_ok"] += isinstance(e, getattr(c, "ConfigError", ())) and "\n" not in str(e) and name in str(e)
+        # review #8: tool-call arguments whose outer level is ASCII-escaped (json.dumps default) around raw inner JSON
+        # (or the other way round, or alternating) get the value escaped for the level it really sits at
+        r8 = c.Scrubber(dict(c.DEFAULTS, mode="on", state_dir=os.path.join(d, "r8")), known=list(REVIEW8_KNOWN))
+        res["mixed_args"] = res["mixed_args_ok"] = 0
+        for v in (REVIEW8_ADDR, "Odile\tMarchetti"):
+            fo = c.Forms()
+            tb8 = {"messages": [{"role": "user", "content": "x"},
+                                {"role": "tool", "tool_call_id": "t0", "content": json.dumps({"v": v})}]}
+            r8.scrub_request(tb8, forms=fo)
+            ph = json.loads(tb8["messages"][-1]["content"])["v"]
+            for inner in range(1, 9):
+                for mix in ("outer_ascii", "inner_ascii", "alternate"):
+                    x = ph
+                    for i in range(inner):
+                        x = json.dumps({"v": x}, ensure_ascii=(mix == "inner_ascii" or (mix == "alternate" and i % 2 == 0)))
+                    args = json.dumps({"path": "a.json", "content": x}, ensure_ascii=(mix != "inner_ascii"))
+                    for streamed in (False, True):
+                        res["mixed_args"] += 1
+                        if streamed:
+                            ts = c.ToolArgsStream(r8, True, None, fo, "write_file")
+                            back = "".join(ts.feed(args[i:i + 3]) for i in range(0, len(args), 3)) + ts.flush()
+                        else:
+                            back = r8.restore_text(args, js=True, forms=fo)
+                        try:
+                            y = json.loads(back)["content"]
+                            for _ in range(inner):
+                                y = json.loads(y)["v"]
+                            res["mixed_args_ok"] += y == v
+                        except (ValueError, KeyError, TypeError):
+                            pass
+        # \u00ab-escaped placeholders in a text reply (a ```json fence, inline JSON, two levels) are restored
+        res["esc_text"] = res["esc_text_ok"] = 0
+        fo = c.Forms()
+        tb8 = {"messages": [{"role": "tool", "tool_call_id": "t0", "content": json.dumps({"v": REVIEW8_ADDR})}]}
+        r8.scrub_request(tb8, forms=fo)
+        ph = json.loads(tb8["messages"][-1]["content"])["v"]
+        e1 = json.dumps(ph)[1:-1]
+        shapes = [("```json\n{\"address\": \"%s\"}\n```" % e1, 1), ('Saved: {"address": "%s"} to the file.' % e1, 1),
+                  ("```json\n%s\n```" % json.dumps({"doc": json.dumps({"address": ph})}), 2)]
+        for txt, lv in shapes:
+            for streamed in (False, True):
+                res["esc_text"] += 1
+                if streamed:
+                    sr = r8.stream_restorer(forms=fo)
+                    back = "".join(sr.feed(txt[i:i + 4]) for i in range(0, len(txt), 4)) + sr.flush()
+                else:
+                    back = r8.restore_text(txt, forms=fo)
+                try:
+                    y = json.loads(back[back.index("{"):back.rindex("}") + 1])
+                    y = y["address"] if lv == 1 else json.loads(y["doc"])["address"]
+                    res["esc_text_ok"] += y == REVIEW8_ADDR
+                except (ValueError, KeyError, TypeError):
+                    pass
+        # a dictionary-word name whose words each fill one HTML block (first/last-name columns, list items, divs)
+        res["cells"] = res["cells_ok"] = 0
+        for txt, want in REVIEW8_CELLS:
+            body = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": txt}]}
+            res["cells"] += 1
+            try:
+                r8.scrub_request(body)
+                got = "swapped" if body["messages"][-1]["content"] != txt else "untouched"
+            except c.ScrubError:
+                got = "blocked"
+            res["cells_ok"] += got == want or (want == "not swapped" and got != "swapped")
+        # a bad listen value or a port already in use: one readable line (exit 2), not a traceback
+        import socket, subprocess
+        res["listen_errors"] = res["listen_errors_ok"] = 0
+        sk = socket.socket()
+        sk.bind(("127.0.0.1", 0))
+        sk.listen(1)
+        try:
+            for i, lst in enumerate(("127.0.0.1", "127.0.0.1:notaport", "127.0.0.1:%d" % sk.getsockname()[1])):
+                lp = os.path.join(d, "listen%d.yaml" % i)
+                with open(lp, "w") as f:
+                    f.write("mode: on\nknown_file: %s\nstate_dir: %s\nlisten: '%s'\n"
+                            % (os.path.join(d, "known.yaml"), os.path.join(d, "ls%d" % i), lst))
+                res["listen_errors"] += 1
+                try:
+                    pr = subprocess.run([sys.executable, "-m", "swapback.proxy"], capture_output=True, text=True,
+                                        timeout=30, env=dict(os.environ, SWAPBACK_CONFIG=lp))
+                    res["listen_errors_ok"] += (pr.returncode == 2 and "Traceback" not in pr.stderr
+                                                and len(pr.stderr.strip().splitlines()) == 1 and "listen" in pr.stderr)
+                except subprocess.TimeoutExpired:
+                    pass
+        finally:
+            sk.close()
         # a large encoded body (200 KB of %XX) is checked in well under the client's patience, not in minutes
         big = {"messages": [{"role": "user", "content": "%41" * 66000}]}
         tb = time.time()
@@ -652,6 +749,8 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                        and res["deep_json_ok"] == res["deep_json"] and res["past_cap_blocked"] == res["past_cap"]
                        and res["deep_body_seconds"] < 5 and res["name_breaks_ok"] == res["name_breaks"]
                        and res["config_errors_ok"] == res["config_errors"]
+                       and res["mixed_args_ok"] == res["mixed_args"] and res["esc_text_ok"] == res["esc_text"]
+                       and res["cells_ok"] == res["cells"] and res["listen_errors_ok"] == res["listen_errors"]
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
             print(json.dumps(res, ensure_ascii=False), file=out)
@@ -674,10 +773,14 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                   + "  (leaked: %d)" % res["tag_joined_leaked"], file=out)
             print("  doubly escaped placeholders in tool args restored: " + pct(res["nested_args_ok"], res["nested_args"]), file=out)
             print("  JSON nested 1-8 levels, every level valid + exact: " + pct(res["deep_json_ok"], res["deep_json"]), file=out)
-            print("  JSON nested deeper than 8 levels, blocked:         " + pct(res["past_cap_blocked"], res["past_cap"])
+            print("  nested 9+ levels (256+ backslashes), blocked:      " + pct(res["past_cap_blocked"], res["past_cap"])
                   + "  (16-level body: %.2f s)" % res["deep_body_seconds"], file=out)
             print("  dictionary-word names across sentences/HTML blocks: " + pct(res["name_breaks_ok"], res["name_breaks"]), file=out)
             print("  missing/broken config file, one readable line:     " + pct(res["config_errors_ok"], res["config_errors"]), file=out)
+            print("  tool args, mixed escaping, 1-8 inner levels valid: " + pct(res["mixed_args_ok"], res["mixed_args"]), file=out)
+            print("  \\u00ab-escaped placeholders in text JSON restored: " + pct(res["esc_text_ok"], res["esc_text"]), file=out)
+            print("  dictionary-word names in one-word HTML cells:      " + pct(res["cells_ok"], res["cells"]), file=out)
+            print("  bad listen / port in use, one readable line:       " + pct(res["listen_errors_ok"], res["listen_errors"]), file=out)
             print("  200 KB %%XX body checked in:                       %.2f s" % res["large_body_seconds"], file=out)
             print("  health: blocked when the list breaks, known count: " + pct(res["health_ok"], res["health_checks"]), file=out)
             if res["decoded_round_trips"]:
