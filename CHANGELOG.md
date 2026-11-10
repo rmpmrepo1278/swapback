@@ -3,6 +3,44 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.11] - 2026-11-10
+
+Fixes from independent review #11.
+
+### Fixed
+- **Dictionary-word names in one-word cells leaked 7 and 8 JSON levels down when the cells had quoted attributes**
+  (review: 312 of 10,280 requests; raw, Go `\u003c` and PHP `<\/td>` HTML at level 8, Go-escaped at level 7). The
+  cell rule read 300 characters of the text as written around the pair, and 8 levels down one quote is 255
+  backslashes and the quote, so the tag before the name was out of reach. It now reads the context in the decoded
+  view the pair was found in, so 300 characters are 300 decoded characters at every level the matcher reads (1-8).
+  Repro: list `Heath Cliff`, send `<div dir="ltr">Heath</div><div dir="ltr">Cliff</div>` wrapped in
+  `json.dumps({"v": ...})` 8 times: swapped, and the echo matches byte for byte.
+- **Many copies of one listed value inside deeply nested JSON slowed down quadratically** (review: 8 levels, 50 KB in
+  11 s, 100 KB in 44 s, 880 KB no answer in 90 s, and an abandoned request kept a CPU core busy). Finding the JSON
+  level of each copy re-read the whole inner string from its start; it is now read incrementally (each character
+  once per level), so 50 KB takes 2.2 s and 100 KB 4.1 s. New setting `scrub_timeout_s` (default 10, `0` = off): a
+  request whose check takes longer is stopped and answered `503` with a one-line reason, and nothing is forwarded.
+- **A name taken from table cells came back as broken HTML when the reply reused it after a different tag**
+  (`<li>Heath</td><td class="last">Cliff</li>`, 36 of 126 reuse cases). The cells and their tags come back only where
+  the same tag comes right before the placeholder as before the name as sent; after any other tag, the listed name.
+- **A name split by one comma was blocked** ("Thanks Faith, Ridge trail opens at 9.", any CSV row holding a listed
+  name), and the blocked message then blocked every later turn that carried it. One comma (spaces or tabs around it)
+  now separates the words of a listed name, as a tab already did. A lower-case comma between ordinary words ("say
+  grace, lee side") is still left alone. A comma followed by a line break and quoted CSV columns (`"Faith","Ridge"`)
+  are still blocked; see the README's limits.
+- **`i` + a combining dot (`i\u0307rem`, how Python lower-cases a capital dotted I) was blocked**; 0.4.9 swapped it.
+  The combining dot after an i is now ignored.
+- **An address quoted with `| ` at the start of each line was blocked**; `| ` now counts as a quote marker like `> `.
+
+### Measured
+- Review #11's scripts on copies, 0.4.10 → 0.4.11: leaks 144 of 7,200 → 0 and 168 of 3,080 → 0; exact round trips
+  unchanged at 100%.
+- False blocks on 2,318 fresh ordinary chunks (standard-library source, chat, HTML email tables in JSON, some with
+  `> ` quotes): 0 on both. Prose with commas, 1,500 chunks built to put the listed names' words side by side in Title
+  Case lists and CSV rows: 0.4.10 touched 7 and blocked 5, 0.4.11 touches 12 and blocks 0; the 5 that were blocked are
+  now swapped, and no other chunk changed.
+- Many copies 8 JSON levels down: review #10's 882 KB body 7.4 s and answered (0.4.10: no answer in 60 s).
+
 ## [0.4.10] - 2026-11-10
 
 Fixes from independent review #10.

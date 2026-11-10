@@ -93,6 +93,14 @@ REVIEW10_ATTR = ['<div dir="ltr">27 Gallowgate Mews</div><div dir="ltr">Unit 9</
                  '<span class="n">Ottoline</span> <span class="n">Frobisher</span>']
 
 
+REVIEW11_DEEP = ['<div dir="ltr">Heath</div><div dir="ltr">Cliff</div>',
+                 '<tr><td class="first">Heath</td><td style="color:#222">Cliff</td><td>Reno</td></tr>',
+                 '<tr><td>Heath</td><td>Cliff</td><td>Reno</td></tr>',
+                 '<ul><li>Heath</li><li>Cliff</li><li>Ops</li></ul>']
+REVIEW11_TEXTS = ["Thanks Faith, Ridge trail opens at 9.", "id,first,last,city\n3,Faith,Ridge,Reno\n4,Ann,Lee,Ames",
+                  "i\u0307rem kaya signed it.", "I\u0307rem Kaya signed it."]
+
+
 REVIEW9_LAYOUTS = ["<tr><td>{F}</td><td>{L}</td></tr>", "<tr><td>{F}</td><td>{L}</td><td>Denver</td></tr>",
                    "<tr><td>{F}</td><td>{L}</td><td>CO</td></tr>", "<tr><td>{F}</td><td>{L}</td><td>Manager</td></tr>",
                    "<tr><td>{F}</td><td>{L}</td><td>Engineering</td></tr>",
@@ -826,6 +834,75 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
         res["r10_many_seconds"] = round(time.time() - t10, 2)
         res["r10_more"] += 1
         res["r10_more_ok"] += sent is not None and "northgable" not in sent and back == big
+        # review #11: the cell rule 7-8 JSON levels down (quoted attributes there are hundreds of backslashes long),
+        # cells reused after another tag come back as the listed name, a name split by one comma or across CSV
+        # columns, "i" + a combining dot, "| "-quoted lines, many copies 8 levels deep, and the per-request time limit
+        r11a = "27 Gallowgate Mews\nUnit 9\nBurlington, VT 05401"
+        r11 = c.Scrubber(dict(c.DEFAULTS, mode="on", state_dir=os.path.join(d, "r11")),
+                         known=[(r11a, "ADDRESS"), ("Heath Cliff", "PERSON"), ("Faith Ridge", "PERSON"),
+                                ("\u0130rem Kaya", "PERSON")])
+
+        def r11_round(content, scr=r11):
+            fo = c.Forms()
+            body = {"messages": [{"role": "user", "content": "read"},
+                                 {"role": "tool", "tool_call_id": "c", "content": content}]}
+            try:
+                scr.scrub_request(body, forms=fo)
+            except c.ScrubError as e:
+                return None, str(e), None
+            sent = body["messages"][-1]["content"]
+            return sent, scr.restore_text(sent, forms=fo), fo
+
+        def r11_leak(sent):
+            return any(w in sent for w in ("Heath", "Gallowgate", "Kaya")) or ("Faith" in sent and "Ridge" in sent)
+        res["r11_deep"] = res["r11_deep_ok"] = 0
+        for html in REVIEW11_DEEP:
+            for lv in (7, 8):
+                for enc in ("raw", "go", "php", "entities"):
+                    content = html.replace("<", "&lt;").replace(">", "&gt;") if enc == "entities" else html
+                    for i in range(lv):
+                        content = json.dumps({"v": content})
+                        if i == 0 and enc == "go":
+                            content = content.replace("<", "\\u003c").replace(">", "\\u003e")
+                        if i == 0 and enc == "php":
+                            content = content.replace("/", "\\/")
+                    sent, back, fo = r11_round(content)
+                    res["r11_deep"] += 1
+                    ok = sent is not None and not r11_leak(sent) and back == content
+                    if ok:                          # streamed too, in 37-character chunks
+                        rs = c.StreamRestorer(r11, forms=fo)
+                        ok = "".join(rs.feed(sent[i:i + 37]) for i in range(0, len(sent), 37)) + rs.flush() == content
+                    res["r11_deep_ok"] += ok
+        res["r11_more"] = res["r11_more_ok"] = 0
+        row = '<tr><td class="id">3</td><td class="first">Heath</td><td class="last">Cliff</td></tr>'
+        sent, back, fo11 = r11_round(row)
+        ph = c.PH_RE.search(sent or "")
+        res["r11_more"] += 4
+        if ph:
+            p = ph.group(0)
+            res["r11_more_ok"] += back == row
+            res["r11_more_ok"] += r11.restore_text("<li>%s</li>" % p, forms=fo11) == "<li>Heath Cliff</li>"
+            res["r11_more_ok"] += r11.restore_text("<p>%s</p>" % p, forms=fo11) == "<p>Heath Cliff</p>"
+            res["r11_more_ok"] += r11.restore_text('<td class="first">%s</td>' % p, forms=fo11) == \
+                '<td class="first">Heath</td><td class="last">Cliff</td>'
+        for content in REVIEW11_TEXTS + [json.dumps({"v": x}) for x in REVIEW11_TEXTS] + [
+                "| " + r11a.replace("\n", "\n| "), json.dumps({"body": "she wrote:\n| " + r11a.replace("\n", "\n| ")})]:
+            sent, back, _fo = r11_round(content)
+            res["r11_more"] += 1
+            res["r11_more_ok"] += sent is not None and not r11_leak(sent) and back == content
+        deep = "\n---\n".join([r11a] * 400)                    # about 20 KB of copies, 8 JSON levels down
+        for _ in range(8):
+            deep = json.dumps({"v": deep})
+        t11 = time.time()
+        sent, back, _fo = r11_round(deep)
+        res["r11_deep_copies_seconds"] = round(time.time() - t11, 2)
+        res["r11_more"] += 1
+        res["r11_more_ok"] += sent is not None and not r11_leak(sent) and back == deep
+        tl = c.Scrubber(dict(c.DEFAULTS, mode="on", state_dir=os.path.join(d, "r11t"), scrub_timeout_s=0.05),
+                        known=[(r11a, "ADDRESS")])
+        sent, err, _fo = r11_round(deep * 3, tl)
+        res["r11_more"] += 1
+        res["r11_more_ok"] += sent is None and "scrub_timeout_s" in (err or "") and "\n" not in (err or "")
         # a bad listen value or a port already in use: one readable line (exit 2), not a traceback
         import socket, subprocess
         res["listen_errors"] = res["listen_errors_ok"] = 0
@@ -902,6 +979,8 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                        and res["r9_cells_ok"] == res["r9_cells"] and res["r9_note_ok"] == res["r9_note"]
                        and res["r10_exact_ok"] == res["r10_exact"] and res["r10_escaped_ok"] == res["r10_escaped"]
                        and res["r10_more_ok"] == res["r10_more"] and res["r10_many_seconds"] < 10
+                       and res["r11_deep_ok"] == res["r11_deep"] and res["r11_more_ok"] == res["r11_more"]
+                       and res["r11_deep_copies_seconds"] < 5
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
             print(json.dumps(res, ensure_ascii=False), file=out)
@@ -938,6 +1017,9 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             print("  cell names in escaped HTML (\\u003c, <\\/, &lt;):    " + pct(res["r10_escaped_ok"], res["r10_escaped"]), file=out)
             print("  cell names reused, dotted I, quoted, many copies:  " + pct(res["r10_more_ok"], res["r10_more"])
                   + "  (9,000 copies: %.2f s)" % res["r10_many_seconds"], file=out)
+            print("  cell names 7-8 JSON levels down, raw/Go/PHP/&lt;:  " + pct(res["r11_deep_ok"], res["r11_deep"]), file=out)
+            print("  cells reused, comma/CSV names, dotted i, | quotes: " + pct(res["r11_more_ok"], res["r11_more"])
+                  + "  (20 KB of copies 8 levels down: %.2f s)" % res["r11_deep_copies_seconds"], file=out)
             print("  200 KB %%XX body checked in:                       %.2f s" % res["large_body_seconds"], file=out)
             print("  health: blocked when the list breaks, known count: " + pct(res["health_ok"], res["health_checks"]), file=out)
             if res["decoded_round_trips"]:

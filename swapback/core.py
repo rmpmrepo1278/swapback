@@ -47,7 +47,7 @@ DEFAULTS = {"mode": "on", "listen": "127.0.0.1:8787", "upstream": "https://api.o
             "known_file": "", "private_terms_file": "", "state_dir": "", "alert_webhook": "", "alert_min_interval_s": 3600,
             "log_requests": True, "restore_bare": True, "patterns": {}, "phone_regions": ["US"],
             "url_swap": ["linkedin.com/in/"], "extra_secret_rules": "", "cache_items": 4000, "canary_model": "",
-            "upstream_timeout_s": 900, "common_names_title_case": True,
+            "upstream_timeout_s": 900, "scrub_timeout_s": 10, "common_names_title_case": True,
             "system_note": "Note: values written like \u00abPERSON_0\u00bb or \u00abEMAIL_0\u00bb are privacy stand-ins that the "
                            "user's own device swaps back to the real value. Use them exactly as written, including in "
                            "tool arguments, and do not mention them."}
@@ -60,6 +60,18 @@ PATH_KEYS = ("known_file", "private_terms_file", "state_dir", "extra_secret_rule
 
 class ScrubError(Exception):
     pass
+
+
+# A request whose check runs past scrub_timeout_s seconds (default 10; 0 = no limit) is stopped and answered 503: the
+# check reads the clock between strings, decoded views and hits, so an abandoned request does not keep a CPU busy.
+_TL = threading.local()
+
+
+def _tick():
+    dl = getattr(_TL, "deadline", None)
+    if dl is not None and time.monotonic() > dl[0]:
+        _TL.deadline = None
+        raise ScrubError("request took longer than %g s to check (scrub_timeout_s); nothing was forwarded" % dl[1])
 
 
 class ConfigError(ValueError):
@@ -245,6 +257,11 @@ MATCH_SEP_RX = r"(?:[\s\u200b\u200c\u200d\u2060\ufeff._\-+/]|%20)+"
 # parts, so "17 Example Mews, Dublin" also matches the same address written over two lines or without the comma.
 LOOSE_SEP_RX = r"(?:[\s\u200b\u200c\u200d\u2060\ufeff._\-+/,;]|%20)+"
 
+# Between the words of a listed name: those separators, or one comma with spaces or tabs around it ("Thanks Faith,
+# Ridge trail ...", a CSV row 3,Faith,Ridge,Reno), the way a tab-separated row already matched. A comma name in lower
+# case between ordinary words ("say grace, lee side") is still left alone (_comma_words).
+NAME_SEP_RX = r"(?:" + MATCH_SEP_RX + r"|[ \t]*,[ \t]*)"
+
 
 def _variant_words(key, loose=False):
     """the words of a listed multi-word or hyphenated value, as _variant_rx joins them."""
@@ -257,7 +274,7 @@ def _variant_rx(key, loose=False):
     A hyphen inside a listed word is interchangeable with any separator or with nothing: "Ferrand-Moreau",
     "Ferrand Moreau", "Ferrand.Moreau" and "FerrandMoreau" are the same written value."""
     words = _variant_words(key, loose)
-    sep = LOOSE_SEP_RX if loose else MATCH_SEP_RX
+    sep = LOOSE_SEP_RX if loose else NAME_SEP_RX
 
     def word(w):
         parts = [p for p in w.split("-") if p]
@@ -386,7 +403,8 @@ _NORM_HINT = re.compile("[\u200b\u200c\u200d\u2060\ufeff\u00ad\u180e\u0300-\u036
 
 def _normalize(text):
     """(normalized, starts) like _decode_once: NFC per base character + its combining marks, zero-width removed,
-    fullwidth ASCII (U+FF01-FF5E) and the ideographic space folded."""
+    fullwidth ASCII (U+FF01-FF5E) and the ideographic space folded, and the combining dot after an i dropped
+    ("i\u0307" is how Python lower-cases a capital dotted I: "\u0130rem" written "i\u0307rem" is "irem")."""
     import unicodedata
     out, starts, i, n = [], [], 0, len(text)
     comb = unicodedata.combining
@@ -404,7 +422,13 @@ def _normalize(text):
         j = i + 1
         while j < n and (comb(text[j]) or text[j] in _ZW):
             j += 1
-        piece = unicodedata.normalize("NFC", "".join(x for x in text[i:j] if x not in _ZW)) if j > i + 1 else c
+        if j > i + 1:
+            marks = "".join(x for x in text[i:j] if x not in _ZW)
+            if c in "iI":                       # "i" + a combining dot above: the lower case of a capital dotted I
+                marks = c + marks[1:].replace("\u0307", "", 1)
+            piece = unicodedata.normalize("NFC", marks)
+        else:
+            piece = c
         for ch in piece:
             out.append(ch)
             starts.append(i)
@@ -431,12 +455,12 @@ def _tag_view(text):
     return "".join(out), starts
 
 
-_QUOTE_MARK = re.compile(r"(?m)^[ \t]*(?:>[ \t]?)+")
-_QUOTE_LINE = re.compile(r"(?m)^[ \t]*>.*\n[ \t]*>")      # two quoted lines in a row
+_QUOTE_MARK = re.compile(r"(?m)^[ \t]*(?:(?:>[ \t]?)+|\|[ \t]?)")     # "> ", ">> ", "> > ", or one "| "
+_QUOTE_LINE = re.compile(r"(?m)^[ \t]*[>|].*\n[ \t]*[>|]")      # two quoted lines in a row
 
 
 def _quote_view(text):
-    """(text with the > quote markers at the start of each line removed, starts) like _tag_view: an address quoted in
+    """(text with the > (or |) quote markers at the start of each line removed, starts) like _tag_view: an address quoted in
     a reply ("> 27 Example Mews\n> Unit 9") is matched as the listed multi-line address."""
     out, starts, i = [], [], 0
     for m in _QUOTE_MARK.finditer(text):
@@ -532,33 +556,37 @@ def _listed_first(sp):
 
 
 def match_views(text):
-    """[(view, index map back to text, surface(s, e))]: the normalized text, each decoded view (decoded_views) and each
+    """[(view, index map back to text, surface(s, e), ctx(s, e))]: the normalized text, each decoded view (decoded_views) and each
     decoded view normalized. surface: the spelling a hit at view[s:e] is restored as — None when the view is only a
     normalization of the text as written (the written span itself comes back, byte-exact), else the decoded spelling
-    before normalization."""
+    before normalization. ctx: (before, after) around a hit at view[s:e], read in the decoded text the view was
+    built from, tags kept (see _view_around)."""
     views = []
     if _NORM_HINT.search(text):
         d, st = _normalize(text)
         if d != text:
-            views.append((d, st, lambda s, e: None))
+            views.append((d, st, lambda s, e: None, None))
     if "<" in text and _HTML_TAG.search(text):
         d, st = _tag_view(text)
-        views.append((d, st, lambda s, e: None))
-    if ">" in text and _QUOTE_LINE.search(text):
+        views.append((d, st, lambda s, e: None, None))
+    if (">" in text or "|" in text) and _QUOTE_LINE.search(text):
         d, st = _quote_view(text)
-        views.append((d, st, lambda s, e: None))
+        views.append((d, st, lambda s, e: None, None))
     for d, m in decoded_views(text, depth=MATCH_DEPTH):
-        views.append((d, m, lambda s, e, d=d: d[s:e]))
+        views.append((d, m, lambda s, e, d=d: d[s:e], lambda s, e, d=d: _view_around(d, s, e)))
         if _NORM_HINT.search(d):
             nd, st = _normalize(d)
             if nd != d:
-                views.append((nd, [m[j] for j in st], lambda s, e, d=d, st=st: d[st[s]:st[e]]))
+                views.append((nd, [m[j] for j in st], lambda s, e, d=d, st=st: d[st[s]:st[e]],
+                              lambda s, e, d=d, st=st: _view_around(d, st[s], st[e])))
         if "<" in d and _HTML_TAG.search(d):       # "Lane<br />\nUnit 12C" in JSON text: decoded, tags as line breaks
             td, st = _tag_view(d)
-            views.append((td, [m[j] for j in st], lambda s, e, d=d, st=st: d[st[s]:st[e]]))
-        if ">" in d and _QUOTE_LINE.search(d):     # an e-mail reply quoted with "> " inside JSON text
+            views.append((td, [m[j] for j in st], lambda s, e, d=d, st=st: d[st[s]:st[e]],
+                          lambda s, e, d=d, st=st: _view_around(d, st[s], st[e])))
+        if (">" in d or "|" in d) and _QUOTE_LINE.search(d):     # an e-mail reply quoted with "> " inside JSON text
             qd, st = _quote_view(d)
-            views.append((qd, [m[j] for j in st], lambda s, e, d=d, st=st: d[st[s]:st[e]]))
+            views.append((qd, [m[j] for j in st], lambda s, e, d=d, st=st: d[st[s]:st[e]],
+                          lambda s, e, d=d, st=st: _view_around(d, st[s], st[e])))
     return views
 
 
@@ -864,28 +892,79 @@ def _around(text, s, e, n=300):
     return b, a
 
 
+def _view_around(base, s, e, n=300):
+    """_around for a hit found in a decoded view: the context is read from the view itself (so n counts decoded
+    characters however many backslashes the text as written spends on each one: a quote 8 JSON levels down is 255
+    backslashes and the quote, and 300 characters of the text as written do not reach back to the tag), then
+    decoded further where the view still carries escapes."""
+    return _around(base, s, e, n)
+
+
+def _side(text, at, n, left):
+    """n decoded characters of text before (left) or after `at`: the raw window grows until they fit, and never starts
+    or ends inside a run of backslashes (deep in JSON one character is written with hundreds of them)."""
+    w, cap = n, n << (MATCH_DEPTH + 2)
+    while True:
+        if left:
+            lo, hi = max(0, at - w), at
+            while 0 < lo < hi and text[lo] == "\\":
+                lo += 1
+        else:
+            lo, hi = at, min(len(text), at + w)
+            while lo < hi < len(text) and text[hi - 1] == "\\":
+                hi -= 1
+        chunk = text[lo:hi]
+        d = _decode_all(chunk) if ("\\" in chunk or "&" in chunk or "%" in chunk) else chunk
+        if len(d) >= n or w >= cap or (lo == 0 if left else hi >= len(text)):
+            return d[-n:] if left else d[:n]
+        w *= 4
+
+
 def _fits_here(v, before):
     """False for a surface that spans separate HTML block elements and had a tag right before it (a name swapped out
     of <td>Amber</td><td>Lane</td>, an address split over <div>s) when the reply puts its placeholder where no tag
     comes right before it ("Dear «PERSON_12»", a tool call's to_name): there the cell tags would come back between
-    the words, so the listed value is restored instead. Where a tag comes right before it (the HTML written back)
-    the span itself returns."""
+    the words, so the listed value is restored instead. Where the same tag comes right before it as before the
+    span as sent (<td> then «PERSON_12»: the row written back) the span itself returns; after any other tag
+    (<li>«PERSON_12»</li>) the listed value does, so the cells are never put back inside another element."""
     if not isinstance(v, _Esc) or not v.lead:
         return True
-    b = _decode_all(before[-300:]) if ("\\" in before or "&" in before) else before
-    return _CELL_GAP.sub(" ", b[-300:]).rstrip().endswith(">")
+    if isinstance(before, tuple):                   # (reply text, placeholder position, earlier stream text)
+        cur, pos, prev = before
+        b = _side(cur, pos, 300, True)
+        if len(b) < 300 and prev:
+            b = _side(prev + cur[:pos], len(prev) + pos, 300, True)
+    else:
+        b = _side(before, len(before), 300, True)
+    return _last_tag(b) == v.lead
 
 
 class _Esc(str):
     """a surface with what its restore needs to know: the value (the str itself, unescaped once per JSON string level
     it sat in), raw (the span as written, when it carried JSON escapes or encoded markup; else None), depth (those
-    levels) and lead (it spans separate HTML block elements and a tag came right before it). Restored where a
+    levels) and lead (it spans separate HTML block elements: the tag that came right before it, "td", "/div" ...). Restored where a
     placeholder lands at the same depth, raw comes back (byte-exact whatever the escaping: \\u003c, <\\/td>, &lt;,
-    \\"); elsewhere the value, escaped once per level. A lead surface is only put back after a tag (_fits_here)."""
+    \\"); elsewhere the value, escaped once per level. A lead surface is only put back after that same tag (_fits_here)."""
     __slots__ = ("raw", "depth", "lead")
 
 
-def _unescaped_surfaces(text, hits):
+def _ctx_of(text, h, ctx):
+    """(before, after) around hit h: from the decoded view it was found in when there is one (match_views), else
+    from the text as written (_around)."""
+    c = ctx.get((h[0], h[1])) if ctx and h[-1] is not None else None
+    return c[0](c[1], c[2]) if c else _around(text, h[0], h[1])
+
+
+_LAST_TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9]{0,9})\b[^<>]{0,200}>$")
+
+
+def _last_tag(before):
+    """("td", "/td" ...) the HTML tag that ends `before` (gaps such as spaces and <span> skipped), else ""."""
+    m = _LAST_TAG.search(_CELL_GAP.sub(" ", before).rstrip())
+    return (m.group(1) + m.group(2).lower()) if m else ""
+
+
+def _unescaped_surfaces(text, hits, ctx=None):
     """hits whose span carries JSON escapes inside a JSON string (<div dir=\\"ltr\\"> between the lines of a listed
     address, Go-style \\u003c) or encoded markup (&lt;td&gt;), or that span HTML block elements: the surface becomes an
     _Esc, so the restore never escapes the escapes a second time, keeps the markup as it was written, and does not
@@ -893,7 +972,9 @@ def _unescaped_surfaces(text, hits):
     if not hits:
         return hits
     out, st = [], None
-    for h in hits:                                   # hits are in order of position (_dedupe)
+    for n, h in enumerate(hits):                     # hits are in order of position (_dedupe)
+        if not n & 63:
+            _tick()
         s, e, surf = h[0], h[1], h[-1]
         raw = text[s:e]
         eff = raw if surf is None else surf
@@ -922,8 +1003,7 @@ def _unescaped_surfaces(text, hits):
         ev = _Esc(v)
         ev.raw, ev.depth, ev.lead = keep_raw, k, False
         if blk:
-            b = _CELL_GAP.sub(" ", _around(text, s, e)[0]).rstrip()
-            ev.lead = b.endswith(">")
+            ev.lead = _last_tag(_ctx_of(text, h, ctx)[0])
         out.append(h[:-1] + (ev,))
     return out
 
@@ -1533,7 +1613,7 @@ class Scrubber:
     def _private_hits_full(self, text, low=None):
         """[(start, end, TYPE, surface)] private-term hits in text and in its decoded views, mapped back to text."""
         hits = [(s, e, t, None) for s, e, t, v in self._private_hits(text, low)]
-        for d, m, surf in match_views(text):
+        for d, m, surf, _around_ in match_views(text):
             hits += [(m[s], m[e], t, surf(s, e)) for s, e, t, v in self._private_hits(d)]
         return [(s, e, t, text[s:e] if v is None else v) for s, e, t, v in _unescaped_surfaces(text, _dedupe(hits))]
 
@@ -1545,13 +1625,18 @@ class Scrubber:
         """[(start, end, key, decoded surface or None)]: hits in text as written, then hits in each decoded view
         mapped back to the escaped span they came from (surface: the decoded spelling, kept for the restore)."""
         hits = [(s, e, k, None) for s, e, k in self._known_hits_raw(text, low)]
-        for d, m, surf in match_views(text):        # plain normalization: the written span itself is restored (exact)
-            hits += [(m[s], m[e], k, surf(s, e)) for s, e, k in self._known_hits_raw(d)]
+        ctx = {}                                    # (start, end) -> the context of a hit found in a decoded view
+        for d, m, surf, around in match_views(text):  # plain normalization: the written span itself is restored (exact)
+            _tick()
+            for s, e, k in self._known_hits_raw(d):
+                hits.append((m[s], m[e], k, surf(s, e)))
+                if around is not None:
+                    ctx.setdefault((m[s], m[e]), (around, s, e))
         if hits and self.strict:                    # dictionary-word names: not across a sentence end or HTML blocks
             hits = [h for h in hits if self.alias.get(h[2], h[2]) not in self.strict or not _name_break(
                 text[h[0]:h[1]] if h[3] is None else h[3], self.known.get(self.alias.get(h[2], h[2]), (h[2],))[0],
-                *_around(text, h[0], h[1]))]
-        return _unescaped_surfaces(text, _dedupe(hits))
+                *_ctx_of(text, h, ctx))]
+        return _unescaped_surfaces(text, _dedupe(hits), ctx)
 
     def _known_hits_raw(self, text, low=None):
         """known-value hits, minus those that are a segment of a filesystem path (/home/<user>/..., ~/...), and minus
@@ -1624,6 +1709,7 @@ class Scrubber:
         out, views = [], [text] + [d for d, _m in decoded_views(text, depth=MATCH_DEPTH)]
         views += [_HTML_TAG.sub(_sk_tag, v) for v in views if "<" in v and ">" in v]    # <br>-joined lines, tagged parts
         for view in views:
+            _tick()
             out += self._sk_scan(skeleton_text(view))
             if out:
                 break
@@ -1760,6 +1846,7 @@ class Scrubber:
                 if "\\" in o and _PAST_CAP.search(o):
                     raise ScrubError("a run of %d or more backslashes cannot be checked (JSON nested more than %d levels "
                                      "deep, or a backslash nested %d deep)" % (2 ** MATCH_DEPTH, MATCH_DEPTH, MATCH_DEPTH))
+                _tick()
                 s, u = self._scrub(o, counts, forms)
                 h = hashlib.blake2b((s if u is None else s + "\x00" + u).encode("utf-8", "surrogatepass"),
                                     digest_size=16).digest()
@@ -1772,6 +1859,12 @@ class Scrubber:
                         self.verified.add(h)
                 return s
             return o
+        try:
+            lim = float(self.cfg.get("scrub_timeout_s", 10) or 0)
+        except (TypeError, ValueError):
+            lim = 10.0
+        prev_dl = getattr(_TL, "deadline", None)
+        _TL.deadline = (time.monotonic() + lim, lim) if lim > 0 else None
         try:
             self.reload_known()
             if self.known_block:
@@ -1790,6 +1883,8 @@ class Scrubber:
             raise
         except Exception as e:
             raise ScrubError("scrub failed: %s" % type(e).__name__) from None
+        finally:
+            _TL.deadline = prev_dl
         if left[0]:
             raise ScrubError("egress check: %d known value(s) left after the swap" % left[0])
         self.save_vault()
@@ -1826,9 +1921,8 @@ class Scrubber:
             return jstate.copy() if jstate is not None else JsonStrState()
         jst = mk()
 
-        def bef(pos, cur):                          # what the reply holds right before a placeholder (see _fits_here)
-            b = cur[max(0, pos - 300):pos]
-            return (prev[-300:] + b)[-300:] if pos < 300 and prev else b
+        def bef(pos, cur):                          # what the reply holds right before a placeholder (see _fits_here):
+            return cur, pos, prev                   # read there only for a span that crossed HTML blocks
         if not js:
             def val(ph, pos, cur):
                 return self._val(ph, jst.depth_at(cur, pos), forms, bef(pos, cur))
@@ -1928,15 +2022,18 @@ class JsonStrState:
     until its brackets close: a ```json fence, or an object written inline in a sentence. A region ends early at the
     first character JSON does not allow (a letter outside a string other than true/false/null, a raw newline inside a
     string), so ordinary prose with a brace in it is left as prose. Scans forward only."""
-    __slots__ = ("doc", "ins", "esc", "src", "pos", "sbuf", "emb")
+    __slots__ = ("doc", "ins", "esc", "src", "pos", "sbuf", "emb", "kid", "kbuf")
     _OK = frozenset(" \t\r\n,:0123456789-+.eEtruefalsn")
 
     def __init__(self):
         self.doc, self.ins, self.esc, self.src, self.pos, self.sbuf, self.emb = None, False, False, None, 0, [], 0
+        self.kid, self.kbuf = None, None
 
     def copy(self):
         o = JsonStrState()
         o.doc, o.ins, o.esc, o.sbuf, o.emb = self.doc, self.ins, self.esc, list(self.sbuf), self.emb
+        if self.kid is not None and self.kbuf is self.sbuf:
+            o.kid, o.kbuf = self.kid.copy(), o.sbuf
         return o
 
     def feed(self, s, a=0, b=None):
@@ -2011,7 +2108,116 @@ class JsonStrState:
             return 0
         if not _may_be_json(self.sbuf):             # a string that does not start like JSON: one level, read in O(1)
             return 1                                # (not the whole string again per placeholder: many copies in one
-        return 1 + _inner_depth("".join(self.sbuf), _RESTORE_DEPTH - 1)      # long string stay linear)
+        if self.kbuf is not self.sbuf:              # long string stay linear)
+            self.kid, self.kbuf = _InnerJson(_RESTORE_DEPTH - 1), self.sbuf
+        return 1 + self.kid.depth(self.sbuf)
+
+
+class _InnerJson:
+    """_inner_depth read incrementally: the escaped content of a JSON string is fed as it grows (only the part not
+    read yet), decoded, and followed as a JSON document; inside one of its strings a child does the same one level
+    down. Asking for the depth after each of many copies of a value in one long, deeply nested string is then linear
+    in the string, where reading the whole string again per copy was quadratic (8 levels deep, 100 KB took 45 s)."""
+    __slots__ = ("left", "fed", "pend", "broken", "doc", "ins", "esc", "bad", "word", "buf", "kid")
+    _ESC1 = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+    _HEX = frozenset("0123456789abcdefABCDEF")
+    _HEAD_OK = frozenset("{}[],:+-.")
+
+    def __init__(self, left):
+        self.left, self.fed, self.pend, self.broken = left, 0, "", False
+        self.doc, self.ins, self.esc, self.bad, self.word, self.buf, self.kid = None, False, False, False, "", [], None
+
+    def copy(self):
+        o = _InnerJson(self.left)
+        o.fed, o.pend, o.broken, o.doc, o.ins, o.esc, o.bad, o.word = (
+            self.fed, self.pend, self.broken, self.doc, self.ins, self.esc, self.bad, self.word)
+        o.buf = list(self.buf)
+        o.kid = self.kid.copy() if self.kid is not None else None
+        return o
+
+    def depth(self, raw):
+        """_inner_depth("".join(raw), left): raw is the content read so far, the part already read unchanged."""
+        if self.left <= 0:
+            return 0
+        if self.fed < len(raw):
+            self._feed(raw, self.fed)
+            self.fed = len(raw)
+        if self.broken or self.pend or not (self.doc and self.ins) or self.bad:
+            return 0                                 # not valid JSON text so far, not inside a string, or prose
+        if self.kid is None:
+            self.kid = _InnerJson(self.left - 1)
+        return 1 + self.kid.depth(self.buf)
+
+    def _feed(self, raw, a):
+        for i in range(a, len(raw)):
+            if self.broken:
+                return
+            ch = raw[i]
+            p = self.pend
+            if p:
+                if len(p) == 1:
+                    if ch == "u":
+                        self.pend = "\\u"
+                        continue
+                    d = self._ESC1.get(ch)
+                    if d is None:
+                        self.broken = True
+                        return
+                    self.pend = ""
+                    self._dec(d)
+                else:
+                    if ch not in self._HEX:
+                        self.broken = True
+                        return
+                    p += ch
+                    self.pend = p
+                    if len(p) == 6:
+                        self.pend = ""
+                        self._dec(chr(int(p[2:], 16)))
+                continue
+            if ch == "\\":
+                self.pend = ch
+            elif ch < " ":
+                self.broken = True                   # a raw control character: json.loads refuses the string
+            else:
+                self._dec(ch)
+
+    def _dec(self, c):
+        if self.doc is None:
+            if c.isspace():
+                return
+            self.doc = c in "{["
+            return
+        if not self.doc:
+            return
+        if self.ins:
+            if self.esc:
+                self.esc = False
+                self.buf.append(c)
+            elif c == "\\":
+                self.esc = True
+                self.buf.append(c)
+            elif c == '"':
+                self.ins, self.buf, self.kid = False, [], None
+            else:
+                self.buf.append(c)
+            return
+        if c == '"':
+            self._word_end()
+            self.ins, self.buf, self.kid = True, [], None
+        elif c.isascii() and c.isalnum():
+            self.word += c
+        else:
+            self._word_end()
+            if not (c.isspace() or c in self._HEAD_OK):
+                self.bad = True                      # _NOT_JSON: a character JSON structure does not use
+
+    def _word_end(self):
+        w = self.word
+        if w:
+            if w[0].isalpha() and w not in ("true", "false", "null"):
+                self.bad = True                      # _NOT_JSON: a bare word other than true, false or null
+            self.word = ""
 
 
 
@@ -2118,7 +2324,8 @@ class StreamRestorer:
     def _out(self, b):
         out = self.s.restore_text(b, self.js, self.stats, self.forms, self.jstate, self.tail)
         self.jstate.feed(out)
-        self.tail = (self.tail + out)[-300:]
+        t = self.tail + out                          # what came before, for _fits_here: 300 decoded characters, which
+        self.tail = t[-300:] if "\\" not in t[-300:] else t[-(300 << MATCH_DEPTH) - 1024:]   # 8 levels down is ~77 KB
         return out
 
     def flush(self):

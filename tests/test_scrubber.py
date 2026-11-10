@@ -907,11 +907,17 @@ def test_variants_no_false_positives(sc2, text):
     assert sc2.leftover_known(text) == 0
 
 
-@pytest.mark.parametrize("text", ["Jane,Testperson", "x_Jane_Testperson_y", "mail.Jane.Testperson"])
+@pytest.mark.parametrize("text", ["x_Jane_Testperson_y", "mail.Jane.Testperson"])
 def test_variants_the_matcher_leaves_are_blocked_by_the_skeleton_recheck(sc2, text):
     # 0.4.4: the matcher keeps its whole-word edges, the egress re-check is looser on purpose: the name is still there
     assert sc2.scrub_text(text) == text
     assert sc2.leftover_known(text) > 0
+
+
+def test_variant_with_one_comma_swapped(sc2):
+    # 0.4.11: one comma between the words of a listed name (a CSV row) is a separator, as a tab is
+    out = sc2.scrub_text("3,Jane,Testperson,Reno")
+    assert "Jane" not in out and out.startswith("3,") and out.endswith(",Reno")
 
 
 @pytest.mark.parametrize("text", ["/home/x/Jane.Testperson/notes.md", "~/jane_testperson/a.txt",
