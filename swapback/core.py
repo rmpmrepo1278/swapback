@@ -1527,6 +1527,16 @@ class Scrubber:
         """[(start, end, TYPE, value)] for everything that would be swapped (public, unchanged shape)."""
         return [x[:4] for x in self.spans_keyed(text)]
 
+    def _clamp_found(self, found, text, esc):
+        """Detector hits whose start lies inside a backslash escape, moved to start after it (value re-read)."""
+        out = []
+        for x in found:
+            cl = self.det.clamp_to_escapes([x], text, esc)
+            if cl:
+                s, e, t, v = cl[0]
+                out.append((s, e, t, v if s == x[0] else text[s:e]))
+        return out
+
     def spans_keyed(self, text):
         """spans() plus each hit's placeholder key: (known/private-term key, canonical spelling), or None."""
         sp = []
@@ -1541,6 +1551,9 @@ class Scrubber:
         found = self.presidio.find(text, low) + self.gitleaks.find(text, low)
         if any(c.isdigit() for c in text):
             found += self.det.find_phones(text, self.regions)
+        esc = self.det.esc_spans(text)
+        if esc:     # no pattern hit starts inside a backslash escape (0.4.13, re-check #13 F1)
+            found = self._clamp_found(found, text, esc)
         for s, e, t, v in found:
             if self.on.get(t, True) and e > s and _valid(t, v):
                 sp.append((s, e, t, 1, v, None))
@@ -1549,6 +1562,11 @@ class Scrubber:
                 continue
             for m in p.finditer(text):
                 s, e = m.span(g)
+                if esc:
+                    cl = self.det.clamp_to_escapes([(s, e)], text, esc)
+                    if not cl:
+                        continue
+                    s, e = cl[0]
                 v = text[s:e]
                 if e <= s or not _valid(t, v):
                     continue

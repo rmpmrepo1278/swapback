@@ -905,6 +905,26 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
         sent, err, _fo = r11_round(deep * 3, tl)
         res["r11_more"] += 1
         res["r11_more_ok"] += sent is None and "scrub_timeout_s" in (err or "") and "\n" not in (err or "")
+        # re-check #13 F1: no pattern hit starts inside a backslash escape. Go writes <, > and & as \\u003c, \\u003e,
+        # \\u0026; an email or phone right after one is swapped whole, restored exactly, and the JSON stays valid
+        r13 = c.Scrubber(dict(c.DEFAULTS, mode="on", state_dir=os.path.join(d, "r13")),
+                         known=[("wpool@fenwright-mail.example", "EMAIL"), ("+1 415 555 0142", "PHONE")])
+        res["r13_esc"] = res["r13_esc_ok"] = 0
+        for val in ("wpool@fenwright-mail.example", "kdrum@larchmoor-post.example", "+1 415 555 0142",
+                    "+1 206 555 0199"):
+            for shape in ("<td>%s</td>", "<b>x</b>&%s", "a&amp;<i>%s</i>", "<%s>"):
+                for lv in (1, 2, 3):
+                    content = json.dumps({"v": shape % val}).replace("<", "\\u003c").replace(">", "\\u003e") \
+                        .replace("&", "\\u0026")
+                    for _ in range(lv - 1):
+                        content = json.dumps({"v": content})
+                    sent, back, _fo = r11_round(content, r13)
+                    res["r13_esc"] += 1
+                    try:
+                        valid = sent is not None and json.loads(sent) is not None
+                    except ValueError:
+                        valid = False
+                    res["r13_esc_ok"] += valid and val.split("@")[0][-6:] not in sent and back == content
         # a bad listen value or a port already in use: one readable line (exit 2), not a traceback
         import socket, subprocess
         res["listen_errors"] = res["listen_errors_ok"] = 0
@@ -982,6 +1002,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                        and res["r10_exact_ok"] == res["r10_exact"] and res["r10_escaped_ok"] == res["r10_escaped"]
                        and res["r10_more_ok"] == res["r10_more"] and res["r10_many_seconds"] < 10
                        and res["r11_deep_ok"] == res["r11_deep"] and res["r11_more_ok"] == res["r11_more"]
+                       and res["r13_esc_ok"] == res["r13_esc"]
                        and res["r11_deep_copies_seconds"] < 5
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
@@ -1022,6 +1043,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             print("  cell names 7-8 JSON levels down, raw/Go/PHP/&lt;:  " + pct(res["r11_deep_ok"], res["r11_deep"]), file=out)
             print("  cells reused, comma/CSV/| names, dotted i, | quotes: " + pct(res["r11_more_ok"], res["r11_more"])
                   + "  (20 KB of copies 8 levels down: %.2f s)" % res["r11_deep_copies_seconds"], file=out)
+            print("  emails/phones right after \\\\u003e, \\\\u0026, \\\\u003c:      " + pct(res["r13_esc_ok"], res["r13_esc"]), file=out)
             print("  200 KB %%XX body checked in:                       %.2f s" % res["large_body_seconds"], file=out)
             print("  health: blocked when the list breaks, known count: " + pct(res["health_ok"], res["health_checks"]), file=out)
             if res["decoded_round_trips"]:

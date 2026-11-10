@@ -15,6 +15,54 @@ import phonenumbers
 
 
 _ESC = re.compile(r"\\[nrt]")     # JSON-style escapes inside tool output, blanked for detection (same length)
+# Any backslash escape, at any JSON level (a run of backslashes, then \uXXXX, \UXXXXXXXX, \xXX or one character).
+# No pattern match may start inside one: Go writes <, > and & as \u003c, \u003e, \u0026, and "\u003ejo@x.com"
+# must give jo@x.com, not "u003ejo@x.com" (0.4.13, re-check #13 F1).
+_ESC_ANY = re.compile(r"\\+(?:u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|x[0-9a-fA-F]{2}|[^\\])")
+
+
+def esc_spans(text):
+    """[(start, end)] of every backslash escape in text (empty when there is no backslash)."""
+    return [m.span() for m in _ESC_ANY.finditer(text)] if "\\" in text else []
+
+
+def _esc_blank(m):
+    g = m.group(0)
+    tail = g.lstrip("\\")
+    if len(tail) > 1:
+        try:
+            if chr(int(tail[1:], 16)).isalnum():
+                return g                 # an escaped letter or digit belongs to the word it sits in: keep it
+        except ValueError:
+            pass
+    return " " * len(g)
+
+
+def blank_escapes(text):
+    """text with every escape that stands for a non-word character blanked (same length), for the detectors."""
+    return _ESC_ANY.sub(_esc_blank, text) if "\\" in text else text
+
+
+def clamp_to_escapes(spans, text, esc=None):
+    """(s, e, ...) spans whose start lies inside a backslash escape start right after it; spans left empty dropped."""
+    esc = esc_spans(text) if esc is None else esc
+    if not esc:
+        return spans
+    import bisect
+    starts = [a for a, _b in esc]
+    out = []
+    for x in spans:
+        s, e = x[0], x[1]
+        i = bisect.bisect_right(starts, s) - 1
+        while 0 <= i < len(esc) and esc[i][0] <= s < esc[i][1]:
+            s = esc[i][1]
+            i += 1
+        if s != x[0]:
+            if s >= e:
+                continue
+            x = (s, e) + tuple(x[2:])
+        out.append(x)
+    return out
 
 
 def lower_same_len(text):
@@ -63,7 +111,7 @@ _NOT_PHONE = re.compile(r"\(?\d{1,3}(?:\.\d{1,3}){3}\)?|\(?(?:19|20)\d\d[-/.]\d\
 
 def find_phones(text, regions=("US", "IN")):
     out = []
-    text = _ESC.sub("  ", text)
+    text = blank_escapes(_ESC.sub("  ", text))
     for m in _PHONE_CAND.finditer(text):
         chunk = m.group(0)
         if sum(c.isdigit() for c in chunk) < 7:
@@ -166,7 +214,7 @@ class Presidio:
 
     def find(self, text, low):
         out = []
-        text = _ESC.sub("  ", text)          # a literal \n before a value is not a word character (same length)
+        text = blank_escapes(_ESC.sub("  ", text))   # a literal \n or \u003e before a value is not a word char
         url_on = any(k in low for k in self.url_keep)
         v6_on = "::" in text or _V6_FULL.search(text) is not None
         for t, rx, score, ctx, name in self.rules:

@@ -3,6 +3,32 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.13] - 2026-11-10
+
+Fixes from independent re-check #13. One small code fix plus README number corrections; nothing else changed.
+
+### Fixed
+- **An email or phone number right after a Go-style escape was matched together with the escape's tail.** JSON
+  written by Go (and others) escapes `<`, `>` and `&` as `\u003c`, `\u003e`, `\u0026`, so in
+  `\u003ctd\u003ejo@example.com` the email detector took `u003ejo@example.com`. A listed email there was blocked
+  (`503`) every time; an unlisted one reached the model as `\«EMAIL_n»`, which is not valid JSON, sometimes as two
+  placeholders. No pattern match (email, phone, the Presidio and gitleaks patterns, custom patterns) may now start
+  inside a `\uXXXX` escape or any other backslash escape, at any JSON level. Measured on 84 shapes (listed and
+  unlisted emails and phones after `\u003e`, `\u0026`, `\u003c`, 1-3 levels): 0.4.12 swapped 60 exactly, blocked 15
+  and sent 9 as broken JSON; 0.4.13 swaps all 84, restores them exactly, and every request stays valid JSON. Selftest
+  and tests cover it (the new selftest line fails on 0.4.12: 34 of 48).
+- **README: the streaming hold-back numbers for escaped JSON were overstated.** The earlier measurement counted the
+  length difference between an escaped placeholder and its value as held back. Re-measured as what is truly held:
+  up to about 20 characters at 2 levels and up to about 300 at 8 (about one escaped placeholder).
+- **README: the slow streamed-restore numbers now give the measured range** from two test models (10 KB in 1-3 s and
+  40 KB in 7-42 s at 2 levels; 10 KB in 0.3-18 s at 8), and the plain-text stream note no longer blames the test
+  model's pacing.
+
+### Known issues
+- An ALL-CAPS listed name with a dotless `ı` (`İpek Yalçınkaya` written `İPEK YALÇINKAYA`) is blocked (`503`), not
+  swapped. Fail-closed, nothing leaks.
+- `scrub_timeout_s: .inf` is accepted and means no limit, like `0` or an empty value.
+
 ## [0.4.12] - 2026-11-10
 
 Fixes from independent review #12. README corrections plus two small code fixes; nothing else changed.
