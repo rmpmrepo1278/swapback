@@ -925,6 +925,32 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                     except ValueError:
                         valid = False
                     res["r13_esc_ok"] += valid and val.split("@")[0][-6:] not in sent and back == content
+        # re-check #14: the secret rules and local patterns read the same escape-blanked text as the email and phone
+        # detectors (F6: a key after \\u003e, \\u0026 or a JSON \\n); an escaped letter is part of an email's local part
+        # (F7: s\\u00f8ren.vik@); a phone right after style="color:#555"\\u003e (F8); a Stripe key before markup
+        res["r14_esc"] = res["r14_esc_ok"] = 0
+        k14, s14 = "AK" + "IA" + "Q7ZK3M5PX2WDLRTN", "sk" + "_live_" + "Xb7Qm2Lp9Rt4Vw6Yz8Nc3Kd5"
+        cases14 = [("<td>%s</td>" % k14, True, k14[4:]), ("<b>x</b>&%s" % k14, True, k14[4:]),
+                   ("note\n%s" % k14, False, k14[4:]), ('<p style="color:#555">(206) 555-0142</p>', True, "555-0142"),
+                   ("<td>%s</td>" % s14, True, s14[8:]), ("<td>%s</td>" % s14, False, s14[8:])]
+        for em in ("s\u00f8ren.vik@kelmarsh-post.example", "\u00e9lodie@kelmarsh-post.example",
+                   "\u00c5ngstr\u00f6m.lab@kelmarsh-post.example"):
+            cases14 += [("<td>%s</td>" % em, g, "@") for g in (False, True)]
+        for shape, go14, bit in cases14:
+            for lv in (1, 2, 3):
+                content = json.dumps({"v": shape})
+                if go14:
+                    content = content.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+                for _ in range(lv - 1):
+                    content = json.dumps({"v": content})
+                sent, back, _fo = r11_round(content, r13)
+                res["r14_esc"] += 1
+                try:
+                    valid = sent is not None and json.loads(sent) is not None
+                except ValueError:
+                    valid = False
+                whole = bit != "@" or "td>\u00ab" in sent or "u003e\u00ab" in sent   # no letters before it
+                res["r14_esc_ok"] += valid and whole and bit not in sent and "kelmarsh" not in sent and back == content
         # a bad listen value or a port already in use: one readable line (exit 2), not a traceback
         import socket, subprocess
         res["listen_errors"] = res["listen_errors_ok"] = 0
@@ -1003,6 +1029,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                        and res["r10_more_ok"] == res["r10_more"] and res["r10_many_seconds"] < 10
                        and res["r11_deep_ok"] == res["r11_deep"] and res["r11_more_ok"] == res["r11_more"]
                        and res["r13_esc_ok"] == res["r13_esc"]
+                       and res["r14_esc_ok"] == res["r14_esc"]
                        and res["r11_deep_copies_seconds"] < 5
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
@@ -1044,6 +1071,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             print("  cells reused, comma/CSV/| names, dotted i, | quotes: " + pct(res["r11_more_ok"], res["r11_more"])
                   + "  (20 KB of copies 8 levels down: %.2f s)" % res["r11_deep_copies_seconds"], file=out)
             print("  emails/phones right after \\\\u003e, \\\\u0026, \\\\u003c:      " + pct(res["r13_esc_ok"], res["r13_esc"]), file=out)
+            print("  keys/emails/phones next to escapes (#14 F6-F8):   " + pct(res["r14_esc_ok"], res["r14_esc"]), file=out)
             print("  200 KB %%XX body checked in:                       %.2f s" % res["large_body_seconds"], file=out)
             print("  health: blocked when the list breaks, known count: " + pct(res["health_ok"], res["health_checks"]), file=out)
             if res["decoded_round_trips"]:

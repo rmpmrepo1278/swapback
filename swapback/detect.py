@@ -26,15 +26,24 @@ def esc_spans(text):
     return [m.span() for m in _ESC_ANY.finditer(text)] if "\\" in text else []
 
 
-def _esc_blank(m):
-    g = m.group(0)
+def _esc_char(g):
+    """the character a \\uXXXX / \\UXXXXXXXX / \\xXX escape stands for (None for one-character escapes like \\n)."""
     tail = g.lstrip("\\")
     if len(tail) > 1:
         try:
-            if chr(int(tail[1:], 16)).isalnum():
-                return g                 # an escaped letter or digit belongs to the word it sits in: keep it
-        except ValueError:
+            return chr(int(tail[1:], 16))
+        except (ValueError, OverflowError):
             pass
+    return None
+
+
+def _esc_blank(m):
+    g = m.group(0)
+    ch = _esc_char(g)
+    if ch is not None and ch.isalnum():
+        # an escaped letter or digit belongs to the word it sits in. A letter is shown to the detectors as letters
+        # (same length), so "s\\u00f8ren.vik@x.org" is one email from its first letter (0.4.14, re-check #14 F7)
+        return "a" * len(g) if ch.isalpha() else g
     return " " * len(g)
 
 
@@ -55,6 +64,8 @@ def clamp_to_escapes(spans, text, esc=None):
         s, e = x[0], x[1]
         i = bisect.bisect_right(starts, s) - 1
         while 0 <= i < len(esc) and esc[i][0] <= s < esc[i][1]:
+            if s == esc[i][0] and (_esc_char(text[esc[i][0]:esc[i][1]]) or "").isalpha():
+                break                    # a match may begin with an escaped letter ("\\u00e9lodie@"): keep it whole
             s = esc[i][1]
             i += 1
         if s != x[0]:
@@ -104,7 +115,8 @@ class KnownMatcher:
 
 
 # ---------------------------------------------------------------- phone numbers (phonenumbers)
-_PHONE_CAND = re.compile(r"(?<![\w+])\+?\(?\d[\d \t().\-]{5,22}\d(?!\w)")
+# a run of 3+ blanks ends a candidate: a blanked escape between "#555\\"\\u003e" and a number is not inside it (#14 F8)
+_PHONE_CAND = re.compile(r"(?<![\w+])\+?\(?\d(?:[\d().\-]|[ \t](?![ \t]{2})){5,22}\d(?!\w)")
 _SEP = re.compile(r"[\s().\-]")
 _NOT_PHONE = re.compile(r"\(?\d{1,3}(?:\.\d{1,3}){3}\)?|\(?(?:19|20)\d\d[-/.]\d\d?[-/.]\d\d?\b.*")   # IPv4, ISO dates
 

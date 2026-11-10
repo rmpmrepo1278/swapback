@@ -60,5 +60,6 @@ def test_detector_starts_after_escape(text):
 
 
 def test_escaped_letter_kept():
-    assert detect.blank_escapes("S\\u00f8ren \\u003e") == "S\\u00f8ren       "
+    # 0.4.14 (#14 F7): an escaped letter is shown to the detectors as letters of the same length
+    assert detect.blank_escapes("S\\u00f8ren \\u003e") == "Saaaaaaren       "
     assert detect.clamp_to_escapes([(1, 9, "T")], "\\u003ejo@x") == [(6, 9, "T")]

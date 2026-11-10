@@ -581,7 +581,7 @@ Other open-source projects do the same job. This table reflects each project's o
 | | **swapback** | [PasteGuard][pg] | [Maskit][mk] | [Veil][vl] | [piighost][ph] | [Kiji Privacy Proxy][kj] |
 |---|---|---|---|---|---|---|
 | License | MIT | Apache-2.0 | AGPL-3.0 | Apache-2.0 | MIT | Apache-2.0 |
-| Stack | Python 3.11+, about 5,800 lines (296 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
+| Stack | Python 3.11+, about 5,800 lines (299 KB), 3 deps, stdlib HTTP server | TypeScript on Bun + GLiNER detector service; Docker | Python engine + desktop app; Docker | Python 3.11+ (PyPI, Homebrew), about 630 KB of Python; httpx, cryptography, pyahocorasick | Python library (PyPI); HTTP proxy in a separate repo, piighost-api | Go server + Electron desktop app; Docker, systemd |
 | Needs an ML model | No | Yes: GLiNER for names and places ([docs][pg-sem]) | Ships a local ONNX NER model | Optional: 46 MB ONNX NER | Optional: pluggable regex, NER or LLM detectors; exact-match needs none | Yes: local ONNX model, 26 PII types |
 | Your own list of values | Yes: a YAML/JSON file you write (or build from a vCard/CSV export), typed, reloaded live | Yes: `denylist` patterns ([docs][pg-mask]) | Yes: custom words and regexes | Yes: seeded from your databases, fixtures, git history and schemas | Yes: `ExactMatchDetector` | Custom regex rules |
 | Stand-ins | Typed placeholders (`«EMAIL_1»`) | Placeholders | Unclear | Pseudonyms | Typed placeholders (`<<EMAIL:1>>`) | Realistic dummy values |
@@ -593,7 +593,7 @@ Other open-source projects do the same job. This table reflects each project's o
 | OpenAI Responses API streams restored | Yes (`/v1/responses`, Codex) | Unclear | Unclear | Yes (Codex CLI) | Unclear | Unclear |
 | Encoded spellings checked before sending | `\uXXXX`/`\n` escapes, nested JSON, HTML entities, `%XX`, `+` for space, NFD, zero-width, fullwidth; not base64 or shell transforms | Unclear | Unclear | Yes, wider: a 21-transform bypass matrix (byte dumps, base64, rot13, ...) in its regression suite | Unclear | Unclear |
 | Fails closed on an empty or shrunk list, or a listed value left after the swap | Yes: blocks (empty), keeps old values + warns (shrunk), egress re-check in every spelling above | Unclear | Unclear | Fails closed on errors and leftovers; list-shrink guard unclear | Unclear | Unclear |
-| Leak test you can re-run | `swapback selftest`: one command after `pip install`, made-up data in the package, 5 s, prints the numbers above | No | No | Yes: bypass matrix and leak checks in its test suite, with real-traffic numbers in its README | No | No |
+| Leak test you can re-run | `swapback selftest`: one command after `pip install`, made-up data in the package, about 10 s, prints the numbers above | No | No | Yes: bypass matrix and leak checks in its test suite, with real-traffic numbers in its README | No | No |
 | APIs | OpenAI Chat and Responses, Anthropic Messages (JSON and streaming) | OpenAI Chat + Responses, Anthropic, Codex | OpenAI, DeepSeek, Anthropic | Anthropic Messages, OpenAI Chat + Responses, Bedrock, Vertex, more | OpenAI and Anthropic connectors; LangChain, Pydantic AI, LlamaIndex, Claude Code integrations | OpenAI; Anthropic named in its diagram |
 | Beyond text | No; [hooks](#hooks) for spend caps and local fallback | Browser extension, dashboard, route-to-local-LLM mode | Image/PDF OCR redaction, browser extension, dashboard | Encrypted vault, DB seeding, shell-safe escaping, MCP DB tool | Agent-framework middleware, chat UI example | Desktop UI, Chrome extension |
 
@@ -674,7 +674,7 @@ Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The
   8, about one escaped placeholder) and arrives in bursts. The text is unchanged either way.
 - **Long streamed replies that are themselves escaped JSON are restored slowly.** The time grows roughly with the
   square of the reply's length. Measured on a shared 4-core test box with two different test models (the time
-  depends on how the model splits its stream): 10 KB in 1–3 s and 40 KB in 7–42 s at 2 JSON levels, 10 KB in
+  depends on how the model splits its stream): 10 KB in 0.4–3 s and 40 KB in 6–42 s at 2 JSON levels, 10 KB in
   0.3–18 s at 8 levels. `scrub_timeout_s` does not cover the restore, so such a reply is
   slow, not cut off. Not affected: non-streamed replies (160 KB at 2 levels in 0.3 s), plain-text streams (160 KB in
   about 4 s) and streamed tool-call arguments. It needs a reply of several thousand
@@ -721,10 +721,10 @@ decoded spelling. The leak check does not use swapback's matcher: it decodes JSO
 for each value's name words, email, phone digits, ID characters and street line. It also runs the egress re-check on
 its own, with the swap switched off, on every form as text, as a `json.dumps` tool result and as JSON inside JSON.
 
-0.4.13 on Python 3.13:
+0.4.14 on Python 3.13:
 
 ```text
-swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 requests (9.5 s)
+swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 requests (9.2 s)
   listed values caught (no form reached the model): 34/34 (100.0%)
   forms leaked to the model:                        0 of 1799 sent
   egress re-check alone (swap off) sees the form:   771/771 (100.0%)
@@ -749,9 +749,10 @@ swapback selftest: 34 made-up listed values, 257 written forms, 7 paths, 1799 re
   cell names in escaped HTML (\u003c, <\/, &lt;):    36/36 (100.0%)
   cell names reused, dotted I, quoted, many copies:  11/11 (100.0%)  (9,000 copies: 0.32 s)
   cell names 7-8 JSON levels down, raw/Go/PHP/&lt;:  32/32 (100.0%)
-  cells reused, comma/CSV/| names, dotted i, | quotes: 18/18 (100.0%)  (20 KB of copies 8 levels down: 0.74 s)
+  cells reused, comma/CSV/| names, dotted i, | quotes: 18/18 (100.0%)  (20 KB of copies 8 levels down: 0.75 s)
   emails/phones right after \\u003e, \\u0026, \\u003c:      48/48 (100.0%)
-  200 KB %XX body checked in:                       0.48 s
+  keys/emails/phones next to escapes (#14 F6-F8):   36/36 (100.0%)
+  200 KB %XX body checked in:                       0.49 s
   health: blocked when the list breaks, known count: 5/5 (100.0%)
   %XX-encoded forms back as the same value, decoded: 105/105 (100.0%)
   unlisted values caught by the pattern detectors:  6/8 (75.0%)  (reported, not a pass condition; names are never caught without a list)

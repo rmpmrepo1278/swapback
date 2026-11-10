@@ -1548,10 +1548,13 @@ class Scrubber:
             sp.append((s, e, t, 0, text[s:e] if surf is None else surf, (k, v)))
         for s, e, t, v in self._private_hits_full(text, low):
             sp.append((s, e, t, 0, v, (_canon(v), None)))
-        found = self.presidio.find(text, low) + self.gitleaks.find(text, low)
+        esc = self.det.esc_spans(text)
+        # the secret rules and the local patterns read the same escape-blanked text (same length) as the email and
+        # phone detectors: a key right after \\u003e, \\u0026 or a JSON \\n is a word of its own (0.4.14, #14 F6)
+        bt = self.det.blank_escapes(self.det._ESC.sub("  ", text)) if "\\" in text else text
+        found = self.presidio.find(text, low) + [(s, e, t, text[s:e]) for s, e, t, _v in self.gitleaks.find(bt, low)]
         if any(c.isdigit() for c in text):
             found += self.det.find_phones(text, self.regions)
-        esc = self.det.esc_spans(text)
         if esc:     # no pattern hit starts inside a backslash escape (0.4.13, re-check #13 F1)
             found = self._clamp_found(found, text, esc)
         for s, e, t, v in found:
@@ -1560,7 +1563,7 @@ class Scrubber:
         for t, p, g, gate in self.patterns:
             if gate and not any(x in low for x in gate):
                 continue
-            for m in p.finditer(text):
+            for m in p.finditer(bt):
                 s, e = m.span(g)
                 if esc:
                     cl = self.det.clamp_to_escapes([(s, e)], text, esc)
@@ -1608,6 +1611,8 @@ class Scrubber:
             out.append(text[pos:s])
             sv = text[s:e] if key is None else v          # a listed value found in escaped text keeps its decoded form
             ph = self.placeholder(sv, t, *(key or ()))   # pattern hits: the vault keeps the surface form (fix2)
+            if key is None and "\\" in sv:             # a pattern hit holding an escape (s\\u00f8ren@, a key's \\n):
+                sv = _unescaped_surfaces(text, [(s, e, sv)])[0][-1]   # restored as written, not escaped again (0.4.14)
             out.append(ph)
             # a pattern hit that holds a whole listed value ("jane [at] example [dot] com") stays swapped here; one
             # that holds only part of one (the street line of a listed address) is put back for the re-check

@@ -18,3 +18,11 @@ description = "HTTP Authorization bearer value (gitleaks' generic rule needs an 
 regex = '''(?i)\bbearer\s+([A-Za-z0-9._\-]{24,})'''
 secretGroup = 1
 keywords = ["bearer"]
+
+[[rules]]
+id = "stripe-key-any-delimiter"
+description = "Stripe secret/restricted key followed by any non-key character (gitleaks' rule wants a quote, a space or ; after it, so a key inside HTML or before a comma or period was missed)"
+regex = '''(?:^|[^A-Za-z0-9_])((?:sk|rk)_(?:test|live|prod)_[A-Za-z0-9]{10,99})(?:[^A-Za-z0-9_]|$)'''
+secretGroup = 1
+entropy = 2
+keywords = ["sk_test", "sk_live", "sk_prod", "rk_test", "rk_live", "rk_prod"]

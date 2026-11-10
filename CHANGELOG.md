@@ -3,6 +3,41 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.14] - 2026-11-10
+
+Fixes from independent re-check #14. Small detector fixes plus two README number corrections; nothing else changed.
+
+### Fixed
+- **An API key right after a Go-style escape or a JSON `\\n` reached the model unswapped.** 0.4.13 made the email
+  and phone detectors read the text with escapes blanked (same length), but the gitleaks secret rules and the local
+  patterns still read it as written, so in `\\u003ctd\\u003eAKIA…` or `"note\\nAKIA…"` the escape's last character
+  (`e`, `n`) was glued to the key and a rule bounded by `\\b` never matched. The secret rules (gitleaks and the extra
+  rules) and the local patterns now read the same blanked text; spans line up because the length is the same.
+  Measured on an AWS key after `\\u003e`, `\\u0026` and `\\n`, levels 1-3 (18 shapes): 0.4.13 swapped 0, 0.4.14 swaps
+  all 18 and restores them exactly.
+- **An unlisted email with an escaped letter in its local part showed its first letters.** In
+  `s\\u00f8ren.vik@…` (Python's default `json.dumps`) the match began after the last escaped letter, so the model saw
+  `sø«EMAIL_n»`. An escaped letter now counts as part of the word it sits in, a match may begin with one, and a
+  pattern hit that holds an escape is restored as written. 18 shapes (3 addresses, raw and Go-escaped, levels 1-3):
+  0.4.13 0 whole, 0.4.14 18.
+- **An unlisted US phone right after `style="color:#555"\\u003e` was not swapped.** The blanked escapes left a run of
+  spaces between `#555` and the number and the phone candidate spanned it. A run of 3 or more blanks now ends a
+  candidate. 6 shapes: 0.4.13 3, 0.4.14 6.
+- **A Stripe secret or restricted key followed by markup or punctuation** (`<td>sk_live_…</td>`, `sk_live_….`, `,`)
+  was missed, because the gitleaks rule wants a quote, a space or `;` after it. An extra rule in the vendored
+  `extra_rules.toml` takes any non-key character. 18 shapes in JSON: 0.4.13 0, 0.4.14 18.
+- **README: the comparison table said the selftest takes 5 s**; it takes about 10 s (the selftest line above it).
+- **README: the slow streamed-restore range now includes the lowest measured times** (10 KB in 0.4-3 s and 40 KB in
+  6-42 s at 2 levels; 10 KB in 0.3-18 s at 8).
+- The selftest has a new line for these shapes (36 requests; on 0.4.13 the same checks pass 0 of 36), and
+  `tests/test_v0414.py` has 64 tests (60 fail on 0.4.13).
+
+### Known issues
+- An unlisted email right after an even run of backslashes (`C:\\\\k.fennimore@…`, a literal backslash pair) can
+  keep its first characters in clear. A contrived shape; listed values are unaffected.
+- An ALL-CAPS listed name with a dotless `ı` is blocked (`503`), not swapped. Fail-closed, nothing leaks.
+- `scrub_timeout_s: .inf` is accepted and means no limit, like `0` or an empty value.
+
 ## [0.4.13] - 2026-11-10
 
 Fixes from independent re-check #13. One small code fix plus README number corrections; nothing else changed.
