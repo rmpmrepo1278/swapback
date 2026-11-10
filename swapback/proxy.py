@@ -486,6 +486,9 @@ def main(argv=None):
         S._quiet_pipe()
     try:
         srv = make_server()
+    except S.ConfigError as e:                   # a missing/broken config file: one readable line, no traceback
+        print("swapback: error: %s. Fix the config file, then start again." % e, file=sys.stderr, flush=True)
+        sys.exit(2)
     except S.ScrubError as e:                    # a missing/broken known file at startup: one readable line, no traceback
         print("swapback: error: %s. Fix the path in your config (or run `swapback init`), then start again." % e,
               file=sys.stderr, flush=True)

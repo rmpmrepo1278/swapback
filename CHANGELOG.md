@@ -3,6 +3,33 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.7] - 2026-11-10
+
+Fixes from independent review #7 against the launch bar.
+
+### Fixed
+- **A value restored into JSON nested 5 to 8 levels deep came back one escape level short, so the innermost JSON was
+  invalid** (a multi-line address or a tab-joined name in `json.dumps` of `json.dumps` ...; review: 256 broken restores
+  of 21,952 replies, 12 of 16 cases at each depth from 5 to 8). The restore counted JSON string levels only up to 4
+  while the matcher reads 8. It now escapes the value once per level it sits in, up to the same 8, in plain and
+  streamed replies and in tool-call arguments (also for placeholders the model wrote ASCII-escaped). Repro
+  (`nest(addr, k)`, k = 1..8): every level parses and the value is byte-exact.
+- **A dictionary-word name was joined across a sentence end or separate HTML elements** ("Saving Grace. Fields of
+  gold", `<div>Grace</div>\n<div>Fields</div>`, `<p>Grace</p><p>Fields</p>`, a blank line between the words): such
+  text is now left as written, by the matcher and the egress re-check alike. A name split by a single `<br>` or an
+  inline tag (`<b>Grace</b> Fields`) is still swapped, and so is any name that is not made of dictionary words.
+- **A missing or broken config file printed a Python traceback.** The CLI and the proxy now print one line naming the
+  file and the problem (not found, cannot be read, not valid YAML with the line and column, not a mapping) and exit 2.
+
+### Security
+- **A listed value nested 9 or more JSON levels deep was sent** (past the matcher's 8 levels; review: all 5 listed
+  addresses and a tab-joined name went out with a `200`). A string whose escapes need more than 8 decodes (a run of
+  256 or more backslashes) cannot be checked, so the request is now blocked with a `503`, before any decoding: a
+  16-level body of about 1.3 MB answers at once (the review saw no answer within 30 s).
+
+### Unchanged
+- CamelCase names such as "RustyBanks" are still swapped as a listed name written glued (the 0.4.6 decision).
+
 ## [0.4.6] - 2026-11-10
 
 Fixes from independent review #6 against the launch bar.

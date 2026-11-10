@@ -58,6 +58,16 @@ HTML_JOINS = ["<br>\n", "<br />\n", "<br/>\r\n", "</p>\n<p>"]
 _ZW = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff\u00ad"))
 
 
+# review #7 (0.4.7): values nested 1 to 8 JSON levels deep, a dictionary-word name next to sentence ends and HTML blocks
+REVIEW7_DEEP = ["2219 Larkspur Hollow Road\nSuite 410\nBoise, ID 83702", "Odile\tMarchetti", "S\u00f8ren \u00c5lund"]
+REVIEW7_KNOWN = [(REVIEW7_DEEP[0], "ADDRESS"), ("Odile Marchetti", "PERSON"), ("S\u00f8ren \u00c5lund", "PERSON"),
+                 ("Grace Fields", "PERSON")]
+REVIEW7_NAME_TEXTS = [("Saving Grace. Fields of gold are lovely.", "untouched"),
+                      ("<div>Grace</div>\n<div>Fields</div>", "untouched"), ("<p>Grace</p><p>Fields</p>", "untouched"),
+                      ("Amazing Grace!\n\nFields of barley.", "untouched"), ("Ask Grace Fields today.", "swapped"),
+                      ("<b>Grace</b> Fields", "swapped"), ("Grace<br>Fields", "swapped")]
+
+
 def _fold(s):
     s = unicodedata.normalize("NFKD", s.translate(_ZW))
     s = "".join(c for c in s if not unicodedata.combining(c))
@@ -514,6 +524,85 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                         res["nested_args_ok"] += o["to"] == v and json.loads(o["nested"])["a"] == v
                     except (ValueError, KeyError, TypeError):
                         pass
+        # review #7: a multi-line address or tab-joined name in JSON nested 1 to 8 levels deep (a tool result built by
+        # json.dumps of json.dumps ...) comes back escaped once per level, so every level parses and the value is
+        # byte-exact (plain and streamed); deeper than 8 levels is blocked, not sent; a dictionary-word name is not
+        # joined across a sentence end or separate HTML elements; a missing or broken config is one readable line
+        rv = c.Scrubber(dict(c.DEFAULTS, mode="on", state_dir=os.path.join(d, "r7")), known=list(REVIEW7_KNOWN))
+
+        def _nest(x, k, ea=True):
+            for _ in range(k):
+                x = json.dumps({"v": x}, ensure_ascii=ea)
+            return x
+
+        def _unnest(x, k):
+            for _ in range(k):
+                x = json.loads(x)["v"]
+            return x
+        res["deep_json"] = res["deep_json_ok"] = res["past_cap"] = res["past_cap_blocked"] = 0
+        for v in REVIEW7_DEEP:
+            for k in range(1, 9):
+                for ea in (True, False):
+                    body = {"messages": [{"role": "user", "content": "look it up"},
+                                         {"role": "tool", "tool_call_id": "t0", "content": _nest(v, k, ea)}]}
+                    fo = c.Forms()
+                    try:
+                        rv.scrub_request(body, forms=fo)
+                    except c.ScrubError:
+                        res["deep_json"] += 2
+                        continue
+                    up = body["messages"][-1]["content"]
+                    for streamed in (False, True):
+                        res["deep_json"] += 1
+                        if streamed:
+                            sr, parts = rv.stream_restorer(forms=fo), []
+                            for i in range(0, len(up), 3):
+                                parts.append(sr.feed(up[i:i + 3]))
+                            back = "".join(parts) + sr.flush()
+                        else:
+                            back = rv.restore_obj({"content": up}, forms=fo)["content"]
+                        orig = _nest(v, k, ea)
+                        try:                     # ASCII values come back byte for byte; any value parses at every level
+                            res["deep_json_ok"] += up != orig and _unnest(back, k) == v and (back == orig or not v.isascii())
+                        except (ValueError, KeyError, TypeError):
+                            pass
+            for k in (9, 10, 12):
+                body = {"messages": [{"role": "tool", "tool_call_id": "t0", "content": _nest(v, k)}]}
+                res["past_cap"] += 1
+                try:
+                    rv.scrub_request(body)
+                except c.ScrubError:
+                    res["past_cap_blocked"] += 1
+        big = {"messages": [{"role": "tool", "tool_call_id": "t0", "content": _nest(
+            "Contact: " + REVIEW7_DEEP[0] + " " + "status ok, nothing to report. " * 1500, 16)}]}
+        tb = time.time()
+        res["past_cap"] += 1
+        try:
+            rv.scrub_request(big)
+        except c.ScrubError:
+            res["past_cap_blocked"] += 1
+        res["deep_body_seconds"] = round(time.time() - tb, 2)
+        res["name_breaks"] = res["name_breaks_ok"] = 0
+        for txt, want in REVIEW7_NAME_TEXTS:
+            body = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": txt}]}
+            res["name_breaks"] += 1
+            try:
+                rv.scrub_request(body)
+                got = "swapped" if body["messages"][-1]["content"] != txt else "untouched"
+            except c.ScrubError:
+                got = "blocked"
+            res["name_breaks_ok"] += got == want
+        res["config_errors"] = res["config_errors_ok"] = 0
+        for name, txt in (("missing.yaml", None), ("broken.yaml", "listen: [\n"), ("list.yaml", "- a\n- b\n")):
+            cp = os.path.join(d, name)
+            if txt is not None:
+                with open(cp, "w") as f:
+                    f.write(txt)
+            res["config_errors"] += 1
+            try:
+                c.load_cfg(cp)
+            except Exception as e:           # a ConfigError: one line naming the file (a traceback is a fail)
+                res["config_errors_ok"] += isinstance(e, getattr(c, "ConfigError", ())) and "\n" not in str(e) and name in str(e)
         # a large encoded body (200 KB of %XX) is checked in well under the client's patience, not in minutes
         big = {"messages": [{"role": "user", "content": "%41" * 66000}]}
         tb = time.time()
@@ -560,6 +649,9 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                        and res["nested_json_ok"] == res["nested_json"] and res["health_ok"] == res["health_checks"]
                        and res["fenced_json_ok"] == res["fenced_json"] and res["large_body_seconds"] < 10
                        and res["tag_joined_swapped"] == res["tag_joined"] and res["nested_args_ok"] == res["nested_args"]
+                       and res["deep_json_ok"] == res["deep_json"] and res["past_cap_blocked"] == res["past_cap"]
+                       and res["deep_body_seconds"] < 5 and res["name_breaks_ok"] == res["name_breaks"]
+                       and res["config_errors_ok"] == res["config_errors"]
                        and res["negatives_untouched"] >= 0.95 * res["negatives"])
         if as_json:
             print(json.dumps(res, ensure_ascii=False), file=out)
@@ -581,6 +673,11 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             print("  addresses joined by <br>\\n etc. in JSON, swapped:  " + pct(res["tag_joined_swapped"], res["tag_joined"])
                   + "  (leaked: %d)" % res["tag_joined_leaked"], file=out)
             print("  doubly escaped placeholders in tool args restored: " + pct(res["nested_args_ok"], res["nested_args"]), file=out)
+            print("  JSON nested 1-8 levels, every level valid + exact: " + pct(res["deep_json_ok"], res["deep_json"]), file=out)
+            print("  JSON nested deeper than 8 levels, blocked:         " + pct(res["past_cap_blocked"], res["past_cap"])
+                  + "  (16-level body: %.2f s)" % res["deep_body_seconds"], file=out)
+            print("  dictionary-word names across sentences/HTML blocks: " + pct(res["name_breaks_ok"], res["name_breaks"]), file=out)
+            print("  missing/broken config file, one readable line:     " + pct(res["config_errors_ok"], res["config_errors"]), file=out)
             print("  200 KB %%XX body checked in:                       %.2f s" % res["large_body_seconds"], file=out)
             print("  health: blocked when the list breaks, known count: " + pct(res["health_ok"], res["health_checks"]), file=out)
             if res["decoded_round_trips"]:

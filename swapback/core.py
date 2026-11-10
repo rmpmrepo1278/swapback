@@ -38,6 +38,9 @@ PH_RE = re.compile(L + r"([A-Z]+(?:_[A-Z]+)*)_(\d+)" + R)
 JS_PH_RE = re.compile(r"(\\+)u00[aA][bB]([A-Z]+(?:_[A-Z]+)*)_(\d+)\1u00[bB][bB]")    # «» escaped inside JSON text
 # (\u00ab: one JSON string level; \\u00ab: two, JSON inside JSON; 2**(n-1) backslashes: n levels)
 MATCH_DEPTH = 8             # escape levels the matcher and the egress re-check decode (JSON inside JSON inside ...)
+# a run of 2**MATCH_DEPTH backslashes or more: an escape that needs more than MATCH_DEPTH decodes (a string nested
+# deeper than the matcher reads). Such a string cannot be checked, so the request is blocked, not forwarded.
+_PAST_CAP = re.compile(r"\\{%d}" % (2 ** MATCH_DEPTH))
 BARE_RE = re.compile(r"(?<![A-Za-z0-9_" + L + r"])(" + "|".join(TYPES) + r")_(\d+)(?![0-9A-Za-z_" + R + r"])")
 CANARY = [("Zorblat Quenneville", "PERSON"), ("zorblat.canary@example.org", "EMAIL")]   # fake, used by `canary`
 DEFAULTS = {"mode": "on", "listen": "127.0.0.1:8787", "upstream": "https://api.openai.com", "allow_remote": False,
@@ -57,6 +60,10 @@ PATH_KEYS = ("known_file", "private_terms_file", "state_dir", "extra_secret_rule
 
 class ScrubError(Exception):
     pass
+
+
+class ConfigError(ValueError):
+    """a missing, unreadable or malformed config file: the CLI prints it as one line, no traceback."""
 
 
 # ---------------------------------------------------------------- config
@@ -84,8 +91,20 @@ def load_cfg(path=None):
     path = path if path is not None else config_path()
     base = os.getcwd()
     if path:
-        with open(path, encoding="utf-8") as f:
-            c.update(yaml.safe_load(f) or {})
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            raise ConfigError("config file not found: %s" % path) from None
+        except OSError as e:
+            raise ConfigError("config file %s cannot be read (%s)" % (path, e.strerror or type(e).__name__)) from None
+        except yaml.YAMLError as e:
+            mk = getattr(e, "problem_mark", None)
+            raise ConfigError("config file %s is not valid YAML%s" % (
+                path, " (line %d, column %d)" % (mk.line + 1, mk.column + 1) if mk else "")) from None
+        if not isinstance(d, dict):
+            raise ConfigError("config file %s must be a YAML mapping (key: value lines)" % path)
+        c.update(d)
         base = os.path.dirname(os.path.abspath(path))
     for k in PATH_KEYS:
         v = c.get(k)
@@ -98,7 +117,7 @@ def load_cfg(path=None):
     m = c.get("mode")
     c["mode"] = "on" if m is True else "off" if m is False else str(m).strip().lower()   # YAML reads on/off as bools
     if c["mode"] not in ("off", "watch", "on"):
-        raise ValueError("mode must be on, watch or off")
+        raise ConfigError("mode must be on, watch or off")
     ToolPolicy(c.get("tool_restore", True))             # a bad tool_restore section fails here, at load
     from . import hooks as _hooks
     _hooks.spec(c)                                      # a malformed hooks section fails here too (the module loads at start)
@@ -405,6 +424,24 @@ def _tag_view(text):
     return "".join(out), starts
 
 
+_SENT_END = re.compile(r"[^\W\d_]{2}[.!?]+(?:\s|<|$)")
+_BLOCK_BREAK = re.compile(r"</?(?:div|p|li|td|th|tr|h[1-6]|ul|ol|table|tbody|thead|section|article|header|footer|"
+                          r"blockquote|pre|dd|dt|dl)\b[^<>]{0,200}>|\n[^\S\n]*\n", re.I)
+
+
+def _name_break(surface, value):
+    """True when the words of a dictionary-word name are split by a sentence end ("Saving Grace. Fields of gold"), a
+    blank line or separate HTML block elements ("<div>Grace</div>\n<div>Fields</div>"): two ordinary words that
+    only sit side by side, not a name. False when the listed value itself is written that way."""
+    if not surface:
+        return False
+    for rx in (_SENT_END, _BLOCK_BREAK):
+        m = rx.search(surface)
+        if m and m.end() < len(surface) and not rx.search(value):
+            return True
+    return False
+
+
 def _listed_first(sp):
     """spans_keyed entries minus pattern-detector hits (priority 1) that cut into a listed value or private term
     (priority 0) without covering it whole: a listed value is swapped as one piece, so the street line that the
@@ -592,6 +629,12 @@ _DIGITS = re.compile(r"\d+")
 
 
 _HTML_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9]{0,9}(?:\s[^<>]{0,200})?/?>")     # <br>, <br/>, </p>, <span class="x">
+
+
+def _sk_tag(m):
+    """an HTML tag in the skeleton re-check's tag view: a block element's tag keeps a paragraph break (so a
+    dictionary-word name is not joined across separate elements), any other tag reads as a space."""
+    return "\n\n" if _BLOCK_BREAK.fullmatch(m.group(0)) else " "
 
 
 def skeleton_text(text):
@@ -1344,6 +1387,9 @@ class Scrubber:
         hits = [(s, e, k, None) for s, e, k in self._known_hits_raw(text, low)]
         for d, m, surf in match_views(text):        # plain normalization: the written span itself is restored (exact)
             hits += [(m[s], m[e], k, surf(s, e)) for s, e, k in self._known_hits_raw(d)]
+        if hits and self.strict:                    # dictionary-word names: not across a sentence end or HTML blocks
+            hits = [h for h in hits if self.alias.get(h[2], h[2]) not in self.strict or not _name_break(
+                text[h[0]:h[1]] if h[3] is None else h[3], self.known.get(self.alias.get(h[2], h[2]), (h[2],))[0])]
         return _dedupe(hits)
 
     def _known_hits_raw(self, text, low=None):
@@ -1415,7 +1461,7 @@ class Scrubber:
         if not text or len(text) < 6 or not (getattr(self, "sk_ents", None) or getattr(self, "sk_cores", None)):
             return []
         out, views = [], [text] + [d for d, _m in decoded_views(text, depth=MATCH_DEPTH)]
-        views += [_HTML_TAG.sub(" ", v) for v in views if "<" in v and ">" in v]    # <br>-joined lines, tagged parts
+        views += [_HTML_TAG.sub(_sk_tag, v) for v in views if "<" in v and ">" in v]    # <br>-joined lines, tagged parts
         for view in views:
             out += self._sk_scan(skeleton_text(view))
             if out:
@@ -1484,6 +1530,8 @@ class Scrubber:
                 return False
         name = typ in ("PERSON", "FAMILY", "ORG")
         if strict:
+            if _name_break(t[pos[i]:pos[j - 1] + 1], self.known.get(key, (" ",))[0] if key else " "):
+                return False
             word_first = [sk[i + n] for n in starts]
             letters = sk[i:j]
             if not all(c.isupper() for c in word_first if c.isalpha()):
@@ -1547,6 +1595,8 @@ class Scrubber:
             if isinstance(o, list):
                 return [walk(x, key, parent) for x in o]
             if isinstance(o, str):
+                if "\\" in o and _PAST_CAP.search(o):
+                    raise ScrubError("JSON nested deeper than %d levels cannot be checked" % MATCH_DEPTH)
                 s, u = self._scrub(o, counts, forms)
                 h = hashlib.blake2b((s if u is None else s + "\x00" + u).encode("utf-8", "surrogatepass"),
                                     digest_size=16).digest()
@@ -1777,10 +1827,10 @@ class JsonStrState:
     def depth_at(self, s, pos):
         """how many JSON string levels a value written at s[pos] sits in: 0 outside any string, 1 inside a string of
         this document, 2 when that string's content is itself a JSON document and the position is inside one of its
-        strings (json.dumps of json.dumps), and so on (up to 4)."""
+        strings (json.dumps of json.dumps), and so on (up to MATCH_DEPTH, the levels the matcher reads)."""
         if not self.inside_at(s, pos):
             return 0
-        return 1 + _inner_depth("".join(self.sbuf), 3)
+        return 1 + _inner_depth("".join(self.sbuf), MATCH_DEPTH - 1)
 
 
 def _inner_depth(raw, left):
@@ -1810,10 +1860,10 @@ def _escaped_json_doc(s):
 
 
 def _back_bs(b, i):
-    """i moved back over the backslashes before it (at most 16): \\\\u00ab (a placeholder escaped for JSON inside JSON)
+    """i moved back over the backslashes before it (at most 2**MATCH_DEPTH): \\\\u00ab (a placeholder escaped for JSON inside JSON)
     is cut whole, not between its backslashes."""
     j = i
-    while j > 0 and i - j < 16 and b[j - 1] == "\\":
+    while j > 0 and i - j < 2 ** MATCH_DEPTH and b[j - 1] == "\\":
         j -= 1
     return j
 
@@ -1827,7 +1877,7 @@ class StreamRestorer:
 
     def _cut(self, b):
         if self.js:                                 # JSON text may carry the placeholder escaped: \u00abPERSON_1\u00bb
-            low = b[-48:].lower()
+            low = b[-(2 ** (MATCH_DEPTH + 1) + 48):].lower()      # a placeholder escaped 8 levels deep: ~300 chars
             off = len(b) - len(low)
             i = low.rfind("\\u00ab")
             if i != -1 and "\\u00bb" not in low[i:]:
@@ -2513,7 +2563,11 @@ def _main(argv=None):
         except Exception:
             kcfg = dict(DEFAULTS)
         sys.exit(known.run(args, kcfg))
-    cfg = load_cfg()
+    try:
+        cfg = load_cfg()
+    except ConfigError as e:                          # missing or broken config file: one line, no traceback
+        print("swapback: error: %s" % e, file=sys.stderr)
+        sys.exit(2)
     try:
         _run_cmd(cmd, cfg, args)
     except ScrubError as e:                           # missing or broken known/private file: one line, no traceback
