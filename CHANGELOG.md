@@ -3,6 +3,35 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.12] - 2026-11-10
+
+Fixes from independent review #12. README corrections plus two small code fixes; nothing else changed.
+
+### Fixed
+- **README: the streaming hold-back sentence was not true for escaped JSON.** It said the restore holds back at most one
+  partial placeholder (up to 24 characters) per stream. That holds for plain-text streams; a streamed reply whose text
+  is itself escaped JSON is held back longer (measured: about 200 characters at 2 levels, about 15,000 at 8) and
+  arrives in bursts. The text is unchanged either way; the sentence now says so with the numbers.
+- **A non-numeric, negative or NaN `scrub_timeout_s` was accepted silently** (and the limit fell back to 10 s). It is
+  now a one-line config error naming the file, and `swapback check-config` and `swapback-proxy` exit 2, like other
+  bad settings. Selftest and tests cover `banana` and `-1`.
+
+### Changed
+- **A listed name split across markdown table cells is swapped, not blocked.** A ` | ` with blanks on both sides
+  between a name's words now counts like a tab or one comma, so `| 7 | Penny | Crane |` and `Owners: Penny | Crane`
+  are swapped and come back byte for byte (0.4.11 answered `503`, and the blocked text kept blocking later requests).
+  A bar with no blank beside it (`|Penny|Crane|`) is still blocked. Measured on 1,100 generated markdown tables
+  (half of them with the listed names' words in random cells, 100 inside JSON) and 400 shell pipelines: 0.4.11
+  blocked 27 tables and touched nothing else; 0.4.12 swaps 23 of those 27 (the other 4 stay blocked, as before) and
+  touches no chunk 0.4.11 left alone; every round trip exact.
+
+### Documented (README Limits)
+- Long streamed replies that are themselves escaped JSON are restored slowly (roughly quadratic in the reply size),
+  and `scrub_timeout_s` does not cover the restore.
+- One or two lines of a listed address on their own (the street line alone, street plus unit, unit plus city) are
+  not swapped; list the street line separately to protect it.
+- The config section says `scrub_timeout_s` covers the request check, not the restore.
+
 ## [0.4.11] - 2026-11-10
 
 Fixes from independent review #11.

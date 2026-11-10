@@ -130,6 +130,16 @@ def load_cfg(path=None):
     c["mode"] = "on" if m is True else "off" if m is False else str(m).strip().lower()   # YAML reads on/off as bools
     if c["mode"] not in ("off", "watch", "on"):
         raise ConfigError("mode must be on, watch or off")
+    t = c.get("scrub_timeout_s")
+    if t is not None:                                   # a word, a negative or NaN: one line here, not a silent 10 s
+        try:
+            tv = None if isinstance(t, bool) else float(t)
+        except (TypeError, ValueError):
+            tv = None
+        if tv is None or tv != tv or tv < 0:
+            raise ConfigError("%sscrub_timeout_s must be a number of seconds, 0 or more (0 turns the limit off), not %r"
+                              % ("config file %s: " % path if path else "", t))
+        c["scrub_timeout_s"] = tv
     ToolPolicy(c.get("tool_restore", True))             # a bad tool_restore section fails here, at load
     from . import hooks as _hooks
     _hooks.spec(c)                                      # a malformed hooks section fails here too (the module loads at start)
@@ -259,8 +269,9 @@ LOOSE_SEP_RX = r"(?:[\s\u200b\u200c\u200d\u2060\ufeff._\-+/,;]|%20)+"
 
 # Between the words of a listed name: those separators, or one comma with spaces or tabs around it ("Thanks Faith,
 # Ridge trail ...", a CSV row 3,Faith,Ridge,Reno), the way a tab-separated row already matched. A comma name in lower
-# case between ordinary words ("say grace, lee side") is still left alone (_comma_words).
-NAME_SEP_RX = r"(?:" + MATCH_SEP_RX + r"|[ \t]*,[ \t]*)"
+# case between ordinary words ("say grace, lee side") is still left alone (_comma_words). A " | " with blanks on both
+# sides counts the same way, so a name split across markdown table cells ("| Penny | Crane |") is swapped (0.4.12).
+NAME_SEP_RX = r"(?:" + MATCH_SEP_RX + r"|[ \t]*,[ \t]*|[ \t]+\|[ \t]+)"
 
 
 def _variant_words(key, loose=False):

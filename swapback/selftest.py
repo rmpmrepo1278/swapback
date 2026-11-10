@@ -646,7 +646,8 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
                 got = "blocked"
             res["name_breaks_ok"] += got == want
         res["config_errors"] = res["config_errors_ok"] = 0
-        for name, txt in (("missing.yaml", None), ("broken.yaml", "listen: [\n"), ("list.yaml", "- a\n- b\n")):
+        for name, txt in (("missing.yaml", None), ("broken.yaml", "listen: [\n"), ("list.yaml", "- a\n- b\n"),
+                          ("timeout_word.yaml", "scrub_timeout_s: banana\n"), ("timeout_neg.yaml", "scrub_timeout_s: -1\n")):
             cp = os.path.join(d, name)
             if txt is not None:
                 with open(cp, "w") as f:
@@ -886,7 +887,8 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             res["r11_more_ok"] += r11.restore_text('<td class="first">%s</td>' % p, forms=fo11) == \
                 '<td class="first">Heath</td><td class="last">Cliff</td>'
         for content in REVIEW11_TEXTS + [json.dumps({"v": x}) for x in REVIEW11_TEXTS] + [
-                "| " + r11a.replace("\n", "\n| "), json.dumps({"body": "she wrote:\n| " + r11a.replace("\n", "\n| ")})]:
+                "| " + r11a.replace("\n", "\n| "), json.dumps({"body": "she wrote:\n| " + r11a.replace("\n", "\n| ")}),
+                "| 3 | Faith | Ridge | Reno |", json.dumps({"md": "| id | first | last |\n|---|---|---|\n| 1 | Heath | Cliff |"})]:
             sent, back, _fo = r11_round(content)
             res["r11_more"] += 1
             res["r11_more_ok"] += sent is not None and not r11_leak(sent) and back == content
@@ -1018,7 +1020,7 @@ def run(listed=None, negatives=None, unlisted=None, out=None, as_json=False):
             print("  cell names reused, dotted I, quoted, many copies:  " + pct(res["r10_more_ok"], res["r10_more"])
                   + "  (9,000 copies: %.2f s)" % res["r10_many_seconds"], file=out)
             print("  cell names 7-8 JSON levels down, raw/Go/PHP/&lt;:  " + pct(res["r11_deep_ok"], res["r11_deep"]), file=out)
-            print("  cells reused, comma/CSV names, dotted i, | quotes: " + pct(res["r11_more_ok"], res["r11_more"])
+            print("  cells reused, comma/CSV/| names, dotted i, | quotes: " + pct(res["r11_more_ok"], res["r11_more"])
                   + "  (20 KB of copies 8 levels down: %.2f s)" % res["r11_deep_copies_seconds"], file=out)
             print("  200 KB %%XX body checked in:                       %.2f s" % res["large_body_seconds"], file=out)
             print("  health: blocked when the list breaks, known count: " + pct(res["health_ok"], res["health_checks"]), file=out)
