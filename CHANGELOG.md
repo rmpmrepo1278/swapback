@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.16] - 2026-11-11
+
+Fixes from independent re-check #16. Two phone detector fixes; nothing else changed.
+
+### Fixed
+- **The second of two unlisted phones with only blanks between them was sent in clear** (a regression from the
+  0.4.15 phone fix). Two numbers separated by 3+ spaces or a tab (`Ana   (503) 555-0147   (212) 555-0162   Seattle`,
+  a tab-separated Home/Mobile row) became one phone candidate; the first number was swapped and the candidate's
+  length cap cut the second in half, so it was never tried. The detector now keeps scanning right after each number
+  it finds, looks for a number it stepped over between two it found, and, when a candidate holds no number as a
+  whole, tries each piece between runs of 2+ blanks or a tab (which also closes the old 2-space and JSON `\n` misses:
+  `(503) 555-0147  212-555-0162`). Re-check #16's 51 two-phone lines, plain and at JSON levels 1-3: 135 phones in
+  clear on 0.4.15 (42 on 0.4.14), 0 now; all restored exactly.
+- **A row of single digits split by 2+ blanks, tabs or an escaped `\n` / `\u00a0` was swapped as a phone**
+  (`Mon\t4\t1\t5\t5\t5\t5\t0\t1\t8\t8`, `votes:  2  0  6  5  5  5  0  1  0  0`, `1   2   3 ... 10`). A phone may now hold at
+  most one 1-digit group, and where runs of blanks are read as one space its groups must be laid out like a phone
+  (an optional country code, then 3-3-4, 3-7, 5-5, 3-4-4 and the like). Single-space digit rows
+  (`1 2 3 4 5 6 7 8 9 10`, `dice: 6 2 3 4 5 1 6 2 3 4`), which every earlier version swapped, are left alone too.
+  Phone-shaped number rows (`units 212   555   1000 sold`) are still swapped, as in 0.4.15.
+
 ## [0.4.15] - 2026-11-10
 
 Fixes from independent re-check #15. One phone detector fix and one Stripe rule fix; nothing else changed.
