@@ -126,6 +126,24 @@ _BLANKS2 = re.compile(r"[ \t]{2,}|\t")
 _WS_ESC = ("t", "n", "r", "f", "b")
 _SEP = re.compile(r"[\s().\-]")
 _NOT_PHONE = re.compile(r"\(?\d{1,3}(?:\.\d{1,3}){3}\)?|\(?(?:19|20)\d\d[-/.]\d\d?[-/.]\d\d?\b.*")   # IPv4, ISO dates
+_DIGITS = re.compile(r"\d+")
+
+
+def _phone_shaped(raw, strict=False):
+    # A row of single digits ("Mon\t4\t1\t5\t5\t5\t5\t0\t1\t8\t8", "1   2   3 ... 10") is not a phone even when its digits
+    # spell a valid number (#16 F13): at most one group may be a single digit. Where blank runs were read as one space
+    # (strict), the groups must also be laid out like a phone: an optional country code (with "+", or 1, 0, 91), then
+    # two to three groups of 2+ digits, or one group of 7+ (3-3-4, 3-7, 5-5, 3-4-4, 4-3-4, 2-4-4 ...).
+    g = _DIGITS.findall(raw)
+    if sum(len(x) == 1 for x in g) > 1:
+        return False
+    if not strict:
+        return True
+    if len(g) > 1 and (raw.lstrip("(").startswith("+") or g[0] in ("1", "0", "91")) and len(g[0]) <= 3:
+        g = g[1:]
+    if len(g) == 1:
+        return len(g[0]) >= 7
+    return 2 <= len(g) <= 3 and all(len(x) >= 2 for x in g) and sum(len(x) >= 3 for x in g) >= len(g) - 1
 
 
 def _phone_blank(m):
@@ -140,11 +158,11 @@ def _phone_blank(m):
     return _PH_FILL * len(g)
 
 
-def _phone_matches(chunk, regions):
+def _phone_matches(chunk, regions, strict=False):
     for region in regions:
         got = [pm for pm in phonenumbers.PhoneNumberMatcher(chunk, region, leniency=phonenumbers.Leniency.VALID)
                if (pm.raw_string.startswith("+") or _SEP.search(pm.raw_string.strip("()")))
-               and not _NOT_PHONE.fullmatch(pm.raw_string)]
+               and not _NOT_PHONE.fullmatch(pm.raw_string) and _phone_shaped(pm.raw_string, strict)]
         if got:
             return [(pm.start, pm.end) for pm in got]
     return []
@@ -159,31 +177,65 @@ def _squeezed_matches(chunk, regions):
             out.append(" " if b else ch)
             pos.append(i)
         prev = b
-    return [(pos[x], pos[y - 1] + 1) for x, y in _phone_matches("".join(out), regions)]
+    return [(pos[x], pos[y - 1] + 1) for x, y in _phone_matches("".join(out), regions, strict=True)]
 
 
-def find_phones(text, regions=("US", "IN")):
-    out = []
-    if "\\" in text:
-        text = _ESC_ANY.sub(_phone_blank, text)
-    for m in _PHONE_CAND.finditer(text):
-        chunk = m.group(0)
+def _chunk_phones(chunk, regions):
+    got = _phone_matches(chunk, regions)
+    if not got and _BLANKS2.search(chunk):
+        got = _squeezed_matches(chunk, regions)
+    if not got and _BLANK_RUN.search(chunk):
+        # still none: try each piece between runs of 3+ blanks ("#555        (206) 555-0142")
+        a = 0
+        for cut in list(_BLANK_RUN.finditer(chunk)) + [None]:
+            b = cut.start() if cut else len(chunk)
+            got += [(a + x, a + y) for x, y in _squeezed_matches(chunk[a:b], regions)]
+            a = cut.end() if cut else a
+    if not got and _BLANKS2.search(chunk):
+        # and between runs of 2+ blanks or a tab: "(503) 555-0147  212-555-0162" read whole holds no number (#16 F14)
+        a = 0
+        for cut in list(_BLANKS2.finditer(chunk)) + [None]:
+            b = cut.start() if cut else len(chunk)
+            got += [(a + x, a + y) for x, y in _phone_matches(chunk[a:b], regions, strict=True)]
+            a = cut.end() if cut else a
+    return got
+
+
+def _scan_phones(text, regions, depth=0):
+    out, pos = [], 0
+    while True:
+        m = _PHONE_CAND.search(text, pos)
+        if m is None:
+            return out
+        pos, chunk = m.end(), m.group(0)
         if sum(c.isdigit() for c in chunk) < 7:
             continue
         if not chunk.startswith("+") and not _SEP.search(chunk):
             continue                                   # a bare digit run (job id, timestamp) is not a phone
-        got = _phone_matches(chunk, regions)
-        if not got and _BLANKS2.search(chunk):
-            got = _squeezed_matches(chunk, regions)
-        if not got and _BLANK_RUN.search(chunk):
-            # still none: try each piece between runs of 3+ blanks ("#555        (206) 555-0142")
-            a = 0
-            for cut in list(_BLANK_RUN.finditer(chunk)) + [None]:
-                b = cut.start() if cut else len(chunk)
-                got += [(a + x, a + y) for x, y in _squeezed_matches(chunk[a:b], regions)]
-                a = cut.end() if cut else a
+        got = sorted(set(_chunk_phones(chunk, regions)))
+        if not got:
+            continue
+        if depth < 4:
+            # a number the matcher stepped over between two it found is looked for on its own
+            extra, a = [], 0
+            for x, y in got:
+                if sum(c.isdigit() for c in chunk[a:x]) >= 7:
+                    extra += [(a + s, a + e) for s, e, _k, _v in _scan_phones(chunk[a:x], regions, depth + 1)]
+                a = max(a, y)
+            got = sorted(set(got + extra))
         out += [(m.start() + x, m.start() + y, "PHONE", chunk[x:y]) for x, y in got]
-    return out
+        last = max(y for _x, y in got)
+        if last < len(chunk):
+            # keep scanning right after the match, not after the candidate: two numbers with only blanks between
+            # them ("Ana   (503) 555-0147   (212) 555-0162", a TSV Home/Mobile row) are one candidate, and the
+            # candidate's length cap can cut the second one in half (#16 F14)
+            pos = m.start() + last
+
+
+def find_phones(text, regions=("US", "IN")):
+    if "\\" in text:
+        text = _ESC_ANY.sub(_phone_blank, text)
+    return _scan_phones(text, regions)
 
 
 # ---------------------------------------------------------------- Presidio pattern recognizers (vendored)
