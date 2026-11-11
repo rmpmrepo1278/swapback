@@ -89,6 +89,21 @@ Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The
 - **One vault, one machine.** Placeholders are stable across all conversations on one machine. It is a single-process
   tool meant to run next to the client on loopback.
 
+### Phone numbers: known gaps
+
+Checked against 0.4.17 by independent re-check #17, with nothing listed (a listed number is caught in all of these):
+
+- **Sent in clear (unlisted).** Ten digits with no separators at all (`call me at 4065550191`): a bare digit run is
+  read as an id, not a phone, so job ids and timestamps are left alone. Digit groups split by commas
+  (`4 0 6, 5 5 5, 0 1 9 1`). A UK number typed one digit at a time (`4 4 2 0 7 9 4 6 0 9 5 8`). List the number in
+  `known.yaml` if it matters.
+- **Over-swapped (fails safe).** Some number formats that look like phones are swapped and restored exactly, so the
+  model sees a placeholder instead: Amazon-style order ids (`112-4567890-1234567`) and grouped account numbers
+  (`account 0001 2345 6789`).
+- **Rows of digits.** A row of single digits separated by single spaces (`1 2 3 4 5 6 7 8 9 10`) can be swapped as a
+  phone when its digits spell a valid number, because a phone typed one digit at a time looks the same. Rows split by
+  tabs or 2+ blanks are left alone.
+
 ## Security notes
 
 - The proxy listens on loopback and refuses other addresses unless you set `allow_remote: true`. It has no

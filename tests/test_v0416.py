@@ -17,8 +17,9 @@ SEPS = ["   ", "    ", "\t", "\t\t", "  "]
 ROWS = ["Ana   %s   %s   Seattle" % (A, B), "Ana\t%s\t%s\tSeattle" % (A, B), "Home   Mobile\n%s   %s" % (A, B),
         "%s   %s   %s" % (A, B, C3)]
 DIGIT_ROWS = ["Mon\t4\t1\t5\t5\t5\t5\t0\t1\t8\t8", "votes:  2  0  6  5  5  5  0  1  0  0", "1   2   3   4   5   6   7   8   9   10",
-              "seats 2\t3\t4\t5\t6\t7\t8\t9\t0\t1", "grid\t9\t1\t9\t5\t5\t5\t0\t1\t7\t3", "1 2 3 4 5 6 7 8 9 10",
-              "dice: 6 2 3 4 5 1 6 2 3 4"]
+              "seats 2\t3\t4\t5\t6\t7\t8\t9\t0\t1", "grid\t9\t1\t9\t5\t5\t5\t0\t1\t7\t3"]
+# 0.4.17 (#17 F15): rows with single spaces ("1 2 3 4 5 6 7 8 9 10", "dice: 6 2 3 4 5 1 6 2 3 4") may be swapped again, as up
+# to 0.4.15: the 1-digit rule now holds only across blank runs, because a phone typed one digit at a time is a phone
 STILL = [("Call (406)   555-0191", "0191"), ("+1   646 555 0139", "0139"), ("Call 503\t555\t0147", "0147"),
          ("#555        (206) 555-0142", "0142"), ("+91   98765   43210", "43210"), ("call 1-800-555-0199", "0199")]
 

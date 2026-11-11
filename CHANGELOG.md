@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.17] - 2026-11-11
+
+Fixes from independent re-check #17. One phone detector fix, README links that work on PyPI, and new known-limit notes.
+
+### Fixed
+- **An unlisted phone typed one digit at a time was sent in clear** (a regression from the 0.4.16 F13 fix). 0.4.16
+  held every phone to "at most one 1-digit group", so `my number is 4 0 6 5 5 5 0 1 9 1`, `+1 4 0 6 5 5 5 0 1 9 1`,
+  `4-0-6-5-5-5-0-1-9-1`, `4.0.6.5.5.5.0.1.9.1`, `406 5 5 5 0 1 9 1`, `4 0 6 555 0191` and `Tel 406 555 0 1 9 1` went
+  out as written. The rule now applies only where a match spans a run of 2+ blanks, a tab or an escaped `\n` /
+  `\u00a0`, and there it counts the pieces between those runs (`4 0 6  5 5 5  0 1 9 1` is three groups and is
+  swapped). Elsewhere 0.4.15's behaviour is back. Re-check #17's 12 shapes, plain and at JSON levels 1-3: 48 of 48 in
+  clear on 0.4.16, 0 now. The F13 rows (`Mon\t4\t1...`, `votes:  2  0  6 ...`, `1   2   3 ... 10`) are still left
+  alone and the F14 pairs are still both swapped. Single-space digit rows (`1 2 3 4 5 6 7 8 9 10`) may be swapped
+  again, as they were up to 0.4.15.
+- **README images and doc links were broken on pypi.org.** They now use absolute GitHub URLs.
+
+### Docs
+- `docs/limits.md` lists the phone shapes that were already missed or over-swapped on every version: no separators
+  (`call me at 4065550191`), comma-split groups, a UK number typed digit by digit, Amazon-style order ids and grouped
+  account numbers.
+
 ## [0.4.16] - 2026-11-11
 
 Fixes from independent re-check #16. Two phone detector fixes; nothing else changed.

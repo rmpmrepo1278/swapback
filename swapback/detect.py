@@ -131,14 +131,20 @@ _DIGITS = re.compile(r"\d+")
 
 def _phone_shaped(raw, strict=False):
     # A row of single digits ("Mon\t4\t1\t5\t5\t5\t5\t0\t1\t8\t8", "1   2   3 ... 10") is not a phone even when its digits
-    # spell a valid number (#16 F13): at most one group may be a single digit. Where blank runs were read as one space
+    # spell a valid number (#16 F13): at most one group (piece between blank runs) may be a single digit. Where blank runs were read as one space
     # (strict), the groups must also be laid out like a phone: an optional country code (with "+", or 1, 0, 91), then
     # two to three groups of 2+ digits, or one group of 7+ (3-3-4, 3-7, 5-5, 3-4-4, 4-3-4, 2-4-4 ...).
+    if not strict:
+        # Outside the blank-run fallback this is 0.4.15's rule: a number typed one digit at a time with single
+        # separators ("4 0 6 5 5 5 0 1 9 1", "4-0-6-5-...", "Tel 406 555 0 1 9 1") is a phone (#17 F15). Only where
+        # the match spans a run of 2+ blanks or a tab are the pieces between those runs held to the 1-digit rule:
+        # "4 0 6  5 5 5  0 1 9 1" is three groups, "votes:  2  0  6  5 ..." is a row of single digits (#16 F13).
+        if not _BLANKS2.search(raw):
+            return True
+        return sum(sum(c.isdigit() for c in p) == 1 for p in _BLANKS2.split(raw)) <= 1
     g = _DIGITS.findall(raw)
     if sum(len(x) == 1 for x in g) > 1:
         return False
-    if not strict:
-        return True
     if len(g) > 1 and (raw.lstrip("(").startswith("+") or g[0] in ("1", "0", "91")) and len(g[0]) <= 3:
         g = g[1:]
     if len(g) == 1:

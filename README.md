@@ -15,9 +15,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/demo-dark.gif">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/demo-light.gif">
-    <img src="docs/assets/demo-dark.gif" alt="Terminal: pip install swapback, then swapback demo. The app sends a made-up name, email and phone; the model receives PERSON_1, EMAIL_1 and PHONE_1 placeholders; the app gets the original values back. PASS." width="720">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/rmpmrepo1278/swapback/main/docs/assets/demo-dark.gif">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/rmpmrepo1278/swapback/main/docs/assets/demo-light.gif">
+    <img src="https://raw.githubusercontent.com/rmpmrepo1278/swapback/main/docs/assets/demo-dark.gif" alt="Terminal: pip install swapback, then swapback demo. The app sends a made-up name, email and phone; the model receives PERSON_1, EMAIL_1 and PHONE_1 placeholders; the app gets the original values back. PASS." width="720">
   </picture>
 </p>
 
@@ -43,17 +43,17 @@ client = OpenAI(
 `swapback init` writes `swapback.yaml` and `known.yaml`. Put the names, emails, phones and IDs that must never reach a
 provider in `known.yaml` (or build it from a contacts export with `swapback known init --vcf contacts.vcf`), set
 `upstream:` in `swapback.yaml`, run `swapback check-config`, then start `swapback-proxy`. The full steps, including
-OpenRouter and Anthropic base URLs, are in the [guide](docs/guide.md#set-it-up-for-a-real-provider).
+OpenRouter and Anthropic base URLs, are in the [guide](https://github.com/rmpmrepo1278/swapback/blob/main/docs/guide.md#set-it-up-for-a-real-provider).
 
 ## Works with
 
 - **[OpenClaw](https://github.com/openclaw/openclaw)**: tested end to end (2026.10.7) with one provider block; its
   `exec`, `web_fetch`, `web_search`, `browser` and `message` tools keep placeholders by default.
-  [Config](docs/guide.md#use-with-agents).
+  [Config](https://github.com/rmpmrepo1278/swapback/blob/main/docs/guide.md#use-with-agents).
 - **Any OpenAI-compatible client**: OpenAI Chat Completions and Responses (the official SDKs, OpenRouter, LiteLLM
   clients). Set the base URL, change nothing else.
 - **Anthropic Messages**: the Anthropic SDK, plain and streamed, including `tool_use`.
-- Tool-policy recipes for Claude Code and Codex CLI: [framework recipes](docs/guide.md#framework-recipes).
+- Tool-policy recipes for Claude Code and Codex CLI: [framework recipes](https://github.com/rmpmrepo1278/swapback/blob/main/docs/guide.md#framework-recipes).
 
 ## How it works
 
@@ -80,12 +80,12 @@ dependencies. Re-run the leak test yourself with `swapback selftest` (made-up da
 
 | Topic | Where |
 |---|---|
-| Why swapback, setup, agents, tool calls, configuration, hooks | [docs/guide.md](docs/guide.md) |
-| What it does not catch, and security notes | [docs/limits.md](docs/limits.md) |
-| Leak test, performance, detection score | [docs/testing.md](docs/testing.md) |
-| Comparison with PasteGuard, Maskit, Veil, piighost and Kiji | [docs/comparison.md](docs/comparison.md) |
-| Changes per release | [CHANGELOG.md](CHANGELOG.md) |
-| Reporting a vulnerability | [SECURITY.md](SECURITY.md) |
+| Why swapback, setup, agents, tool calls, configuration, hooks | [docs/guide.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/guide.md) |
+| What it does not catch, and security notes | [docs/limits.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/limits.md) |
+| Leak test, performance, detection score | [docs/testing.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/testing.md) |
+| Comparison with PasteGuard, Maskit, Veil, piighost and Kiji | [docs/comparison.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/comparison.md) |
+| Changes per release | [CHANGELOG.md](https://github.com/rmpmrepo1278/swapback/blob/main/CHANGELOG.md) |
+| Reporting a vulnerability | [SECURITY.md](https://github.com/rmpmrepo1278/swapback/blob/main/SECURITY.md) |
 
 Project facts: Python 3.11+, about 5,900 lines (302 KB), 3 dependencies (PyYAML, phonenumbers, pyahocorasick), stdlib
 HTTP server, MIT.
