@@ -50,6 +50,8 @@ OpenRouter and Anthropic base URLs, are in the [guide](https://github.com/rmpmre
 - **[OpenClaw](https://github.com/openclaw/openclaw)**: tested end to end (2026.10.7) with one provider block; its
   `exec`, `web_fetch`, `web_search`, `browser` and `message` tools keep placeholders by default.
   [Config](https://github.com/rmpmrepo1278/swapback/blob/main/docs/guide.md#use-with-agents).
+- **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**: runs in front of the maintainer's own Hermes agent
+  every day, on real email and calendar traffic.
 - **Any OpenAI-compatible client**: OpenAI Chat Completions and Responses (the official SDKs, OpenRouter, LiteLLM
   clients). Set the base URL, change nothing else.
 - **Anthropic Messages**: the Anthropic SDK, plain and streamed, including `tool_use`.
@@ -74,7 +76,7 @@ flowchart LR
    prompt-injected `web_fetch` cannot carry your email out.
 
 No model to download and nothing probabilistic: exact matching plus patterns, about 5,900 lines of Python, 3
-dependencies. Re-run the leak test yourself with `swapback selftest` (made-up data, 7 request paths, about 10 s).
+dependencies. Re-run the leak test yourself with `swapback selftest` (made-up data, 7 request paths, about 12 s).
 
 ## Documentation
 
