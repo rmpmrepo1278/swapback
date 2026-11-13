@@ -35,6 +35,41 @@ Kiji, and the optional NER in Veil and piighost); coding agents on production da
 escaping, a wider transform-bypass suite, a stricter tool default, Bedrock and Vertex); images and documents (Maskit);
 framework middleware (piighost); a desktop app (Kiji).
 
+## Wider field: Presidio, LLM Guard, Skyflow, Nightfall
+
+Four names come up in almost every search for this problem. They solve adjacent jobs, so they are not columns in the
+table above; here is where each fits, from its own README and docs as read on 2026-11-13. Corrections are welcome.
+
+**[Microsoft Presidio][pr]** (now at [data-privacy-stack/presidio][pr], per the migration notice in its README) —
+open source (MIT), Python. A de-identification framework: an Analyzer that finds PII with NER models, regular
+expressions, rule-based logic and checksums, plus Anonymizer, Image-Redactor and Structured modules, usable as a
+library or as a Docker/Kubernetes service. It is a building block you put inside your own pipeline rather than a
+proxy in front of an LLM API, so request-path behavior such as streamed-reply restore and tool-call egress policy is
+yours to build. Its NER catches names you never listed, which swapback does not; Presidio's own README warns that
+automated detection gives no guarantee of finding all sensitive information. (swapback vendors Presidio's pattern
+rule set; see `THIRD_PARTY_NOTICES.md`.)
+
+**[LLM Guard][lg]** — open source (MIT), Python library by Protect AI. A security toolkit of prompt and output
+scanners: Anonymize/Deanonymize, Secrets, PromptInjection, BanSubstrings, Toxicity and about twenty more, wired into
+your own application rather than fronting an LLM API as a proxy. Note: its README states the project is archived and
+no longer maintained, as of 2026-11-13.
+
+**[Skyflow for GenAI][sf]** — commercial, hosted. A data privacy vault: detect, redact and re-identify sensitive
+data across the LLM lifecycle (data collection, training, fine-tuning, RAG and inference), with tokenization,
+fine-grained access control, data residency and compliance support (GDPR, the EU AI Act, DPDP). Data flows through
+Skyflow's cloud vault. That is the right architecture when an organization needs a governed, audited vault and a
+residency program; it is the opposite of swapback's local-only, read-it-in-an-afternoon model.
+
+**[Nightfall][nf]** — commercial, hosted. AI-native DLP for a workforce: browser plugins and client monitoring watch
+prompts, uploads and clipboard data going into ChatGPT, Copilot, Gemini and other AI apps, with pre-submission
+redaction, ML detectors and employee coaching. It protects people at the browser and endpoint layer across many AI
+products; swapback protects the API path for the agents and applications you point at it, on your own machine.
+
+[pr]: https://github.com/data-privacy-stack/presidio
+[lg]: https://github.com/protectai/llm-guard
+[sf]: https://www.skyflow.com/product/skyflow-for-genai
+[nf]: https://www.nightfall.ai/integrations/ai-applications
+
 [pg]: https://github.com/sgasser/pasteguard
 [pg-mask]: https://pasteguard.com/docs/concepts/mask-mode
 [pg-sem]: https://github.com/sgasser/pasteguard#how-detection-works
