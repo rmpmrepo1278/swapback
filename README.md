@@ -24,7 +24,7 @@
 ## Quickstart
 
 ```bash
-pip install swapback
+pipx install swapback   # needs Python 3.11+; or `pip install swapback` in a venv
 swapback demo
 swapback init && swapback-proxy
 ```
@@ -85,7 +85,7 @@ dependencies. Re-run the leak test yourself with `swapback selftest` (made-up da
 | Why swapback, setup, agents, tool calls, configuration, hooks | [docs/guide.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/guide.md) |
 | What it does not catch, and security notes | [docs/limits.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/limits.md) |
 | Leak test, performance, detection score | [docs/testing.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/testing.md) |
-| Comparison with PasteGuard, Maskit, Veil, piighost and Kiji | [docs/comparison.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/comparison.md) |
+| Comparison with PasteGuard, Maskit, Veil, piighost and Kiji, plus Presidio, LLM Guard, Skyflow and Nightfall | [docs/comparison.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/comparison.md) |
 | Changes per release | [CHANGELOG.md](https://github.com/rmpmrepo1278/swapback/blob/main/CHANGELOG.md) |
 | Reporting a vulnerability | [SECURITY.md](https://github.com/rmpmrepo1278/swapback/blob/main/SECURITY.md) |
 
