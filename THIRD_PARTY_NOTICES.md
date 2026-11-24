@@ -88,3 +88,9 @@ as any of the copyrights mentioned below:
 
 SCOWL also incorporates word lists by Alan Beale, the Moby project (public domain), Brian Kelk's UK English Wordlist
 and others; their notices are in the SCOWL README (https://github.com/en-wl/wordlist/blob/master/scowl/README).
+
+## Optional integration: newmean-pii (not bundled)
+
+- What: optional local multilingual PII detector backend (`pip install 'swapback[newmean]'`), powered by [newmean.ai](https://newmean.ai) `newmean-pii`. Not installed or downloaded unless opted in.
+- Source: https://github.com/newmean-ai/pii
+- License: Apache License 2.0

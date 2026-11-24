@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "swapback"
-version = "0.4.17"
+version = "0.5.0"
 description = "Local proxy that swaps personal data for placeholders before an LLM call and restores it byte-exact in the reply. Fails closed. OpenAI-compatible."
 readme = "README.md"
 license = "MIT"
@@ -42,6 +42,9 @@ Security = "https://github.com/rmpmrepo1278/swapback/security/policy"
 
 [project.optional-dependencies]
 test = ["pytest==8.4.2"]
+newmean = ["newmean-pii>=1.4.0"]
+langchain = ["langchain>=1.0.0"]
+all = ["newmean-pii>=1.4.0", "langchain>=1.0.0"]
 
 [project.scripts]
 swapback = "swapback.core:main"

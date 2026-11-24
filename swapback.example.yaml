@@ -34,3 +34,14 @@ tool_restore:
 # hooks:
 #   module: spend_cap.py        # a .py file (relative to this file) or an importable module name
 #   options: {daily_usd: 5}
+
+# Optional: local multilingual NER detector powered by newmean.ai `newmean-pii` (Apache-2.0, off by default).
+# Install first: pip install 'swapback[newmean]'. Shorthand: `newmean: true` (medium) or `newmean: nano|small|medium|large`.
+# newmean:
+#   enabled: true
+#   size: medium                # nano (2.6 MB), small (7.1 MB), medium (11.3 MB), large (15.5 MB)
+#   sensitivity: 0.0            # >0 catches more, <0 catches less
+#   # labels: [PERSON, EMAIL, PHONE, ADDRESS, ORG, ID_NUMBER, FINANCIAL, DATE_OF_BIRTH, SECRET]
+#   # allow: ["Acme Corp"]
+#   # block: [["Project Apollo", "ORG"]]
+#   # strict_short_names: false

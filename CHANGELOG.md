@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-11-23
+
+New optional backends: local multilingual NER (`newmean-pii`) and LangChain 1.0+ reversible middleware.
+
+### Added
+- **`swapback[newmean]`** — optional on-device NER detector backend (Apache-2.0 `newmean-pii`, 2.6–15.5 MB, 54 languages) for names and PII you never listed. Lazy import, thread-safe model loading, canonical Swapback label mapping, priority-2 overlap resolution, sentence-punctuation trimming, YAML/env proxy config (`newmean:`, `SWAPBACK_NEWMEAN`).
+- **`swapback[langchain]`** — thin reversible `SwapbackMiddleware` for LangChain 1.0+ `create_agent`: swaps PII out on the wire and restores replies, structured outputs and allowed tool-call arguments; egress-risk tool calls keep placeholders per `ToolPolicy`. Sync + async. Guide in `docs/langchain.md`.
+- **`Scrubber(..., extra_detectors=...)`** and **`vault_path=':memory:'`** support in core — core dependencies unchanged (zero bloat).
+
+### Fixed
+- Limits doc re-check number refreshed to #18.
+
 ## [0.4.17] - 2026-11-11
 
 Fixes from independent re-check #17. One phone detector fix, README links that work on PyPI, and new known-limit notes.

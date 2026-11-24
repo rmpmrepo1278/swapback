@@ -91,7 +91,7 @@ Listing a value in `known.yaml` or `private_terms.yaml` covers any of these. The
 
 ### Phone numbers: known gaps
 
-Checked against 0.4.17 by independent re-check #17, with nothing listed (a listed number is caught in all of these):
+Checked against 0.5.0 by independent re-check #18, with nothing listed (a listed number is caught in all of these):
 
 - **Sent in clear (unlisted).** Ten digits with no separators at all (`call me at 4065550191`): a bare digit run is
   read as an id, not a phone, so job ids and timestamps are left alone. Digit groups split by commas

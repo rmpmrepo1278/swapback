@@ -55,6 +55,7 @@ OpenRouter and Anthropic base URLs, are in the [guide](https://github.com/rmpmre
 - **Any OpenAI-compatible client**: OpenAI Chat Completions and Responses (the official SDKs, OpenRouter, LiteLLM
   clients). Set the base URL, change nothing else.
 - **Anthropic Messages**: the Anthropic SDK, plain and streamed, including `tool_use`.
+- **LangChain 1.0+**: thin reversible `SwapbackMiddleware` (`pip install 'swapback[langchain]'`) that swaps PII on the wire and restores replies and allowed tool calls. [Guide](https://github.com/rmpmrepo1278/swapback/blob/main/docs/langchain.md).
 - Tool-policy recipes for Claude Code and Codex CLI: [framework recipes](https://github.com/rmpmrepo1278/swapback/blob/main/docs/guide.md#framework-recipes).
 
 ## How it works
@@ -75,8 +76,11 @@ flowchart LR
    arguments. Network, shell and send-style tool calls keep the placeholder unless you allow the tool, so a
    prompt-injected `web_fetch` cannot carry your email out.
 
-No model to download and nothing probabilistic: exact matching plus patterns, about 5,900 lines of Python, 3
-dependencies. Re-run the leak test yourself with `swapback selftest` (made-up data, 7 request paths, about 12 s).
+No model to download by default: exact matching plus patterns, about 7,100 lines of Python, 3 core
+dependencies. Need to catch unlisted names or multilingual PII? Opt in to the optional local NER backend
+(`pip install 'swapback[newmean]'`, 2.6–15.5 MB, 54 languages, powered by [newmean.ai](https://newmean.ai)
+`newmean-pii`, Apache-2.0). Re-run the leak test yourself with `swapback selftest` (made-up data, 7 request paths,
+about 12 s).
 
 ## Documentation
 
@@ -85,11 +89,12 @@ dependencies. Re-run the leak test yourself with `swapback selftest` (made-up da
 | Why swapback, setup, agents, tool calls, configuration, hooks | [docs/guide.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/guide.md) |
 | What it does not catch, and security notes | [docs/limits.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/limits.md) |
 | Leak test, performance, detection score | [docs/testing.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/testing.md) |
+| LangChain 1.0+ reversible PII middleware & proxy setup | [docs/langchain.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/langchain.md) |
 | Comparison with PasteGuard, Maskit, Veil, piighost and Kiji, plus Presidio, LLM Guard, Skyflow and Nightfall | [docs/comparison.md](https://github.com/rmpmrepo1278/swapback/blob/main/docs/comparison.md) |
 | Changes per release | [CHANGELOG.md](https://github.com/rmpmrepo1278/swapback/blob/main/CHANGELOG.md) |
 | Reporting a vulnerability | [SECURITY.md](https://github.com/rmpmrepo1278/swapback/blob/main/SECURITY.md) |
 
-Project facts: Python 3.11+, about 5,900 lines (302 KB), 3 dependencies (PyYAML, phonenumbers, pyahocorasick), stdlib
+Project facts: Python 3.11+, about 7,100 lines (343 KB), 3 core dependencies (PyYAML, phonenumbers, pyahocorasick), stdlib
 HTTP server, MIT.
 
 ## Development
@@ -114,7 +119,7 @@ See [CONTRIBUTING.md](https://github.com/rmpmrepo1278/swapback/blob/main/CONTRIB
 - ~~Restore OpenAI Responses API streams.~~ Done in 0.3.0.
 - ~~Keep placeholders in tool calls that could send data out.~~ Done in 0.3.0.
 - ~~Build the known-values file from a contacts export.~~ Done in 0.3.0 (`swapback known init`).
-- Optional, pluggable NER for names you never listed, off by default.
+- ~~Optional, pluggable NER for names you never listed, off by default.~~ Optional `swapback[newmean]` backend (powered by [newmean.ai](https://newmean.ai) `newmean-pii`, Apache-2.0).
 - More national ID and address patterns, with tests from synthetic data.
 - ~~Release on PyPI.~~ Done: `pip install swapback`.
 - ~~Hooks for spend caps, local fallback and usage accounting.~~ Done in 0.4.0.
