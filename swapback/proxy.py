@@ -105,14 +105,17 @@ class H(BaseHTTPRequestHandler):
             ok, status, why = SCR.status()
             if why and why not in warn:
                 warn = [why] + list(warn)
-            return self._send_json(200, {"ok": ok, "status": status,
-                                         "mode": CFG["mode"],
-                                         "known": SCR.known_count(), "known_builtin": len(S.CANARY),
-                                         "vault": len(SCR.rev), "warnings": warn,
-                                         "requests": STATE["requests"], "blocked": STATE["blocked"],
-                                         "errors": STATE["errors"], "last_error": STATE["last_error"],
-                                         "uptime_s": int(time.time() - STATE["started"]),
-                                         "hooks": HOOKS.name, "hook_errors": HOOKS.errors})
+            health_obj = {"ok": ok, "status": status,
+                          "mode": CFG["mode"],
+                          "known": SCR.known_count(), "known_builtin": len(S.CANARY),
+                          "vault": len(SCR.rev), "warnings": warn,
+                          "requests": STATE["requests"], "blocked": STATE["blocked"],
+                          "errors": STATE["errors"], "last_error": STATE["last_error"],
+                          "uptime_s": int(time.time() - STATE["started"]),
+                          "hooks": HOOKS.name, "hook_errors": HOOKS.errors}
+            if getattr(SCR, "newmean_detector", None) is not None:
+                health_obj["newmean"] = SCR.newmean_detector.summary()
+            return self._send_json(200, health_obj)
         self._proxy(None)
 
     def do_POST(self):

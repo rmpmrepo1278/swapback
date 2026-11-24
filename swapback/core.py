@@ -47,14 +47,14 @@ DEFAULTS = {"mode": "on", "listen": "127.0.0.1:8787", "upstream": "https://api.o
             "known_file": "", "private_terms_file": "", "state_dir": "", "alert_webhook": "", "alert_min_interval_s": 3600,
             "log_requests": True, "restore_bare": True, "patterns": {}, "phone_regions": ["US"],
             "url_swap": ["linkedin.com/in/"], "extra_secret_rules": "", "cache_items": 4000, "canary_model": "",
-            "upstream_timeout_s": 900, "scrub_timeout_s": 10, "common_names_title_case": True,
+            "upstream_timeout_s": 900, "scrub_timeout_s": 10, "common_names_title_case": True, "newmean": False,
             "system_note": "Note: values written like \u00abPERSON_0\u00bb or \u00abEMAIL_0\u00bb are privacy stand-ins that the "
                            "user's own device swaps back to the real value. Use them exactly as written, including in "
                            "tool arguments, and do not mention them."}
 ENV = {"mode": "SWAPBACK_MODE", "listen": "SWAPBACK_LISTEN", "upstream": "SWAPBACK_UPSTREAM",
        "known_file": "SWAPBACK_KNOWN_FILE", "private_terms_file": "SWAPBACK_PRIVATE_TERMS",
        "state_dir": "SWAPBACK_STATE_DIR", "alert_webhook": "SWAPBACK_ALERT_WEBHOOK",
-       "canary_model": "SWAPBACK_CANARY_MODEL"}
+       "canary_model": "SWAPBACK_CANARY_MODEL", "newmean": "SWAPBACK_NEWMEAN"}
 PATH_KEYS = ("known_file", "private_terms_file", "state_dir", "extra_secret_rules")
 
 
@@ -143,6 +143,15 @@ def load_cfg(path=None):
     ToolPolicy(c.get("tool_restore", True))             # a bad tool_restore section fails here, at load
     from . import hooks as _hooks
     _hooks.spec(c)                                      # a malformed hooks section fails here too (the module loads at start)
+    if c.get("newmean") not in (None, False, ""):
+        from . import newmean as _newmean
+        try:
+            nm_cfg = _newmean.normalize_config(c["newmean"])
+        except ValueError as e:
+            raise ConfigError("%s%s" % ("config file %s: " % path if path else "", e)) from None
+        c["newmean"] = nm_cfg if nm_cfg is not None else False
+    else:
+        c["newmean"] = False
     c["_config_dir"] = base
     return c
 
@@ -1214,13 +1223,19 @@ def in_fs_path(text, s, e):
 
 
 class Scrubber:
-    def __init__(self, cfg=None, known=None, vault_path=None, private=None):
+    def __init__(self, cfg=None, known=None, vault_path=None, private=None, extra_detectors=None):
         """known: [(value, TYPE)] to use instead of cfg known_file; private: rules from build_private_terms() to use
-        instead of cfg private_terms_file. The fake canary values are always part of the known list."""
+        instead of cfg private_terms_file; extra_detectors: optional list of detector objects (.find(text)) or
+        callables returning [(start, end, TYPE, value)]. vault_path=":memory:" keeps the vault in RAM only.
+        The fake canary values are always part of the known list."""
         self.cfg = cfg or load_cfg()
         self.lock = threading.RLock()
-        self.sdir = state_dir(self.cfg)
-        self.vault_path = vault_path or os.path.join(self.sdir, "vault.json")
+        if vault_path == ":memory:":
+            self.sdir = ""
+            self.vault_path = ":memory:"
+        else:
+            self.sdir = state_dir(self.cfg)
+            self.vault_path = vault_path or os.path.join(self.sdir, "vault.json")
         self.known_path = self.cfg.get("known_file") or ""
         self.private_path = self.cfg.get("private_terms_file") or ""
         self.known_mtime = None
@@ -1240,13 +1255,25 @@ class Scrubber:
         self.det, self.presidio, self.gitleaks = detectors(self.cfg.get("extra_secret_rules"))
         self.presidio.url_keep = tuple(self.cfg.get("url_swap") or ("linkedin.com/in/",))
         self.regions = tuple(self.cfg.get("phone_regions") or ("US", "IN"))
+        self.extra_detectors = list(extra_detectors or ())
+        self.newmean_detector = None
+        nm_val = self.cfg.get("newmean")
+        if nm_val:
+            from .newmean import NewmeanDetector
+            nm = nm_val if isinstance(nm_val, NewmeanDetector) else NewmeanDetector.from_config(nm_val)
+            if nm is not None:
+                self.newmean_detector = nm
+                self.extra_detectors.append(nm)
 
     # vault ---------------------------------------------------------
     def _load_vault(self):
-        try:
-            v = json.load(open(self.vault_path, encoding="utf-8"))
-        except (OSError, ValueError):
+        if self.vault_path == ":memory:":
             v = {}
+        else:
+            try:
+                v = json.load(open(self.vault_path, encoding="utf-8"))
+            except (OSError, ValueError):
+                v = {}
         self.fwd = v.get("fwd") or {}            # norm key -> placeholder
         self.rev = v.get("rev") or {}            # placeholder -> value
         self.ctr = v.get("ctr") or {}
@@ -1255,7 +1282,8 @@ class Scrubber:
     def save_vault(self):
         with self.lock:
             if self.dirty:
-                _write_private(self.vault_path, {"fwd": self.fwd, "rev": self.rev, "ctr": self.ctr})
+                if self.vault_path != ":memory:":
+                    _write_private(self.vault_path, {"fwd": self.fwd, "rev": self.rev, "ctr": self.ctr})
                 self.dirty = False
 
     def placeholder(self, value, t, key=None, canon=None):
@@ -1479,7 +1507,7 @@ class Scrubber:
         if self.known_path and n_new == 0 and not self.cfg.get("allow_empty_known") and not n_old:
             self.known_block = ("known_file has no values (%s); add your names, emails and phones, or set "
                                 "allow_empty_known: true" % os.path.basename(self.known_path))
-        if prev is None and self.known_path:              # first load: compare with the size at the last start
+        if prev is None and self.known_path and self.sdir:  # first load: compare with the size at the last start
             cp = os.path.join(self.sdir, "known_count.json")
             try:
                 last = int(json.load(open(cp, encoding="utf-8")).get("n", 0))
@@ -1574,6 +1602,22 @@ class Scrubber:
                 if e <= s or not _valid(t, v):
                     continue
                 sp.append((s, e, t, 1, v, None))
+        if self.extra_detectors:
+            ph_ranges = [m.span() for m in PH_RE.finditer(text)] if L in text else []
+            if "\\" in text:
+                ph_ranges += [m.span() for m in JS_PH_RE.finditer(text)]
+            for det in self.extra_detectors:
+                extra_hits = det.find(text) if hasattr(det, "find") else det(text)
+                if esc:
+                    extra_hits = self._clamp_found(extra_hits, text, esc)
+                for s, e, t, v in extra_hits:
+                    if not (self.on.get(t, True) and e > s and _valid(t, v)):
+                        continue
+                    if ph_ranges and any(s < pe and e > ps for ps, pe in ph_ranges):
+                        continue
+                    if t == "PERSON" and in_fs_path(text, s, e):
+                        continue
+                    sp.append((s, e, t, 2, v, None))
         sp = _listed_first(sp)
         sp.sort(key=lambda x: (x[0], x[3], -(x[1] - x[0])))
         res, last = [], -1
@@ -1581,7 +1625,7 @@ class Scrubber:
             if s >= last:
                 res.append((s, e, t, v, key))
                 last = e
-            elif res and e > res[-1][1] and s == res[-1][0]:
+            elif res and e > res[-1][1] and s == res[-1][0] and (pr <= 1 or t == res[-1][2]):
                 res[-1] = (s, e, t, v, key)
                 last = e
         return res
@@ -3048,7 +3092,13 @@ def _run_cmd(cmd, cfg, args):
                 notes.append("%d listed phone(s) are not US numbers: matched as written and by their digits in any "
                              "grouping; US formats are added only for US numbers" % non_us)
         else:
-            notes.append("no known_file: only the pattern detectors run (names are never detected without a list)")
+            if cfg.get("newmean"):
+                notes.append("no known_file: pattern detectors and newmean-pii NER run (list core names in known.yaml for deterministic matching and fail-closed egress re-check)")
+            else:
+                notes.append("no known_file: only the pattern detectors run (names are never detected without a list)")
+        if cfg.get("newmean"):
+            nm_c = cfg["newmean"] if isinstance(cfg["newmean"], dict) else {"size": "medium"}
+            out["newmean"] = {"enabled": True, "size": nm_c.get("size", "medium")}
         if warn:
             out["warnings"] = warn
         if notes:
